@@ -32,4 +32,15 @@ curl --fail --silent --show-error "http://localhost:${RELYTHRA_WORKER_PORT}/metr
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_WEB_PORT}/" \
   | grep --fixed-strings '<title>Relythra</title>'
 
-printf 'Smoke checks passed: migrations, API, worker, and web are reachable.\n'
+# Losing PostgreSQL must fail readiness without taking down the API process.
+"${COMPOSE[@]}" stop postgres
+readiness_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+  "http://localhost:${RELYTHRA_API_PORT}/health/ready")"
+test "${readiness_status}" = "503"
+curl --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/ready" \
+  | grep --fixed-strings '"error":"dependency unavailable"'
+curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/live" \
+  | grep --fixed-strings '"status":"ok"'
+"${COMPOSE[@]}" logs --no-color api | grep --fixed-strings 'readiness check failed'
+
+printf 'Smoke checks passed: migrations, healthy services, and database-loss behavior.\n'

@@ -32,7 +32,7 @@ Compose 会等待 PostgreSQL 健康、执行迁移，再启动 API、Worker 和 
 - API readiness：<http://localhost:8080/health/ready>
 - Worker metrics：<http://localhost:8081/metrics>
 
-数据库只映射到本机 `15432` 端口用于演示。停止服务：
+所有演示端口只绑定回环地址，数据库映射到本机 `15432` 端口。停止服务：
 
 ```bash
 docker compose --file deploy/compose/compose.yaml down
