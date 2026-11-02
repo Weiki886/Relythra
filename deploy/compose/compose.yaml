@@ -1,0 +1,84 @@
+x-go-build: &go-build
+  context: ../..
+  dockerfile: deploy/docker/go.Dockerfile
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: relythra
+      POSTGRES_USER: relythra
+      POSTGRES_PASSWORD: ${RELYTHRA_POSTGRES_PASSWORD:?Set RELYTHRA_POSTGRES_PASSWORD}
+    ports:
+      - "${RELYTHRA_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relythra -d relythra"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    build:
+      <<: *go-build
+      args:
+        BINARY: relythra-migrate
+    command: ["up"]
+    environment:
+      RELYTHRA_DATABASE_URL: "postgres://relythra:${RELYTHRA_POSTGRES_PASSWORD}@postgres:5432/relythra?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      <<: *go-build
+      args:
+        BINARY: relythra-api
+    environment:
+      RELYTHRA_API_ADDR: :8080
+      RELYTHRA_DATABASE_URL: "postgres://relythra:${RELYTHRA_POSTGRES_PASSWORD}@postgres:5432/relythra?sslmode=disable"
+    ports:
+      - "${RELYTHRA_API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  worker:
+    build:
+      <<: *go-build
+      args:
+        BINARY: relythra-worker
+    environment:
+      RELYTHRA_WORKER_ADDR: :8081
+    ports:
+      - "${RELYTHRA_WORKER_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/metrics"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  web:
+    build:
+      context: ../../web
+    ports:
+      - "${RELYTHRA_WEB_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  postgres-data:
