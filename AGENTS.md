@@ -97,7 +97,7 @@ Relythra 面向发布后异常排查，关联发布、代码变更、指标、�
 
 采用团队、多迭代交付模式。标准链路为：
 
-`Proposal → ADR（需要时）→ Milestone → Issue → 分支 → Commit → PR → Review/CI → Merge → Release`
+`Proposal → ADR（需要时）→ Milestone → Issue → 分支 → Commit → PR → Review/CI → Merge → 删除合并分支 → Release`
 
 ### Issue
 
@@ -142,7 +142,11 @@ PR 标题必须使用英文，正文可以使用中文。PR 必须：
 - 至少一名合适的人类 Reviewer 完成评审，所有 `blocking` 意见关闭。AI Review 只作补充，不能冒充人工 Review。
 - 不因等待或时间压力降低测试、安全或人工评审门禁。
 - Agent 只有收到用户明确指令后才能合并 PR、创建 Tag/Release、关闭 Milestone 或执行其他不可逆仓库操作。
-- 合并后按仓库策略删除短生命周期分支；不得移动已发布 Tag。
+- PR 合并后必须删除对应的来源分支，避免远端和本地积累已失效的短生命周期分支。
+- 优先启用 GitHub 的 `Automatically delete head branches`。若远端分支仍然存在，合并负责人在确认合并提交已进入 `main` 后执行 `git push origin --delete <branch>`。
+- 切回并更新 `main` 后，使用 `git branch -d <branch>` 删除本地分支；不得使用 `-D` 跳过“已合并”检查。
+- 只有分支仍被其他未合并 PR 引用、受保护规则阻止删除或审计要求保留时，才可暂缓清理；PR 必须记录原因、清理责任人和期限。
+- `main`、发布 Tag 和明确声明的长期维护分支不属于删除范围；不得移动已发布 Tag。
 
 ## 8. Definition of Ready 与 Definition of Done
 
@@ -160,6 +164,7 @@ PR 标题必须使用英文，正文可以使用中文。PR 必须：
 - 文档、配置、迁移、Compose 和工具链影响已同步。
 - 没有真实凭据、敏感数据、调试残留或无关 diff。
 - PR 已记录实际命令、结果和未覆盖项；人工 Review 已完成。
+- PR 合并后，来源分支已从远端和本地删除；存在记录在案的例外时除外。
 - 关联 Issue、Milestone 和标签状态准确，回滚或后续风险有明确入口。
 
 ## 9. 测试与验证
@@ -218,6 +223,7 @@ RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke
 - 始终先检查 `git status`、当前分支、远端基线和相关 Issue。
 - 只在授权范围内编辑；不擅自提交用户改动，不切换分支丢弃工作，不重置、清理或覆盖他人文件。
 - 不直接修改 `main`，不自行合并、发布、创建 Release、关闭 Issue/Milestone 或修改仓库权限。
+- 获得明确合并授权后，同时完成对应来源分支清理，除非用户明确要求保留；不得删除 `main`、Tag 或其他未合并分支。
 - 删除数据卷、执行数据库 `down`、force-push、重写历史或触发外部写操作前，必须得到用户明确授权。
 - 遇到失败先复现、读取完整错误并定位根因；不通过反复重跑或关闭检查制造“通过”。
 - 完成时报告：改动文件、关联 Issue/PR、实际执行命令与结果、风险级别、远程 CI 状态、未验证项和下一项最小动作。
