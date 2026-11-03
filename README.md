@@ -11,9 +11,36 @@ Relythra 是一个面向发布后异常排查的只读诊断系统：关联发�
 | Go | 1.26 |
 | Node.js | 24 |
 | PostgreSQL | 17 |
-| Docker Compose | v2（含 BuildKit） |
+| Docker Compose | v2（含 BuildKit，仅 Compose 方式需要） |
 
 其他依赖由 `go.mod`、`web/package-lock.json` 和容器镜像固定。
+
+## 本地启动（不使用 Docker）
+
+本地已启动 PostgreSQL 时，可以从仓库根目录一次启动 API、Worker 和前端开发服务器：
+
+```bash
+./scripts/dev.sh
+```
+
+脚本会检查本机依赖，按需创建 `relythra` 数据库，执行数据库迁移，安装缺失的前端依赖，并等待三个服务通过健康检查。服务地址如下：
+
+- Web：<http://127.0.0.1:5173>
+- API readiness：<http://127.0.0.1:8080/health/ready>
+- Worker metrics：<http://127.0.0.1:8081/metrics>
+
+按 `Ctrl+C` 会停止脚本启动的全部进程。默认连接 `postgres://$USER@127.0.0.1:5432/relythra?sslmode=disable`；如果数据库使用其他地址、用户或密码，通过 `RELYTHRA_DATABASE_URL` 覆盖：
+
+```bash
+RELYTHRA_DATABASE_URL='postgres://user:password@127.0.0.1:5432/relythra?sslmode=disable' \
+  ./scripts/dev.sh
+```
+
+只检查环境、准备本地数据库并查看脚本将使用的地址，不启动服务：
+
+```bash
+./scripts/dev.sh --check
+```
 
 ## 使用 Compose 启动
 
