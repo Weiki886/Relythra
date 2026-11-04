@@ -273,6 +273,8 @@ func TestTesterReportsKubernetesUnsupported(t *testing.T) {
 - [ ] **步骤 4：重跑目标测试，覆盖成功、401/403、超时、错误 JSON、超大响应、Kubernetes 未支持和 Secret 不泄漏。**
 - [ ] **步骤 5：提交 `feat(connector): add bounded readonly connection tests`。**
 
+**Ruling**：计划中的 `datasource.DataSourceMapping` 实际只存在于持久化包 `store`，连接器直接依赖仓储类型会倒置层次。实现改为由连接器定义只含来源、运行时、公开设置和 Secret 引用的 `health.Target`；API 负责把仓储记录转换为该类型。错误代价是调用方需要显式转换字段。
+
 ### Task 5: 管理 Token、CRUD、校验与查询计划 API
 
 **文件**
