@@ -67,6 +67,7 @@ CREATE TABLE deployment_events (
     FOREIGN KEY (service_id, project_id) REFERENCES services(id, project_id) ON DELETE RESTRICT,
     FOREIGN KEY (release_id, service_id, project_id) REFERENCES releases(id, service_id, project_id) ON DELETE RESTRICT,
     UNIQUE (service_id, environment, source_system, idempotency_key),
+    UNIQUE (id, project_id),
     CHECK (finished_at IS NULL OR finished_at >= started_at)
 );
 
@@ -129,6 +130,7 @@ CREATE TABLE incidents (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     FOREIGN KEY (service_id, project_id) REFERENCES services(id, project_id) ON DELETE RESTRICT,
+    UNIQUE (id, project_id),
     CHECK (ended_at IS NULL OR ended_at >= started_at),
     CHECK (service_id IS NOT NULL OR environment IS NULL)
 );
@@ -183,6 +185,7 @@ CREATE TABLE tool_calls (
     completed_at timestamptz,
     duration_ms integer CHECK (duration_ms IS NULL OR duration_ms >= 0),
     created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (id, investigation_id),
     CHECK (
         (status = 'STARTED' AND completed_at IS NULL)
         OR
@@ -193,7 +196,7 @@ CREATE TABLE tool_calls (
 CREATE TABLE evidence (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     investigation_id uuid NOT NULL REFERENCES investigations(id) ON DELETE RESTRICT,
-    tool_call_id uuid REFERENCES tool_calls(id) ON DELETE RESTRICT,
+    tool_call_id uuid,
     source_type text NOT NULL CHECK (source_type IN (
         'DEPLOYMENT',
         'GITHUB',
@@ -219,6 +222,8 @@ CREATE TABLE evidence (
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (id, investigation_id),
     UNIQUE (investigation_id, source_type, content_hash),
+    FOREIGN KEY (tool_call_id, investigation_id)
+        REFERENCES tool_calls(id, investigation_id) ON DELETE RESTRICT,
     CHECK (observed_end >= observed_start)
 );
 
@@ -312,12 +317,17 @@ CREATE TABLE notifications (
 );
 
 CREATE TABLE deployment_candidates (
-    incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE RESTRICT,
-    deployment_event_id uuid NOT NULL REFERENCES deployment_events(id) ON DELETE RESTRICT,
+    project_id uuid NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    incident_id uuid NOT NULL,
+    deployment_event_id uuid NOT NULL,
     match_status text NOT NULL CHECK (match_status IN ('PENDING', 'MATCHED', 'AMBIGUOUS', 'MISSING')),
     match_reason text NOT NULL CHECK (btrim(match_reason) <> ''),
     created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (incident_id, deployment_event_id)
+    PRIMARY KEY (incident_id, deployment_event_id),
+    FOREIGN KEY (incident_id, project_id)
+        REFERENCES incidents(id, project_id) ON DELETE RESTRICT,
+    FOREIGN KEY (deployment_event_id, project_id)
+        REFERENCES deployment_events(id, project_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE investigation_transition_audits (

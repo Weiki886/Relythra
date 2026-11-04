@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
@@ -319,6 +321,13 @@ func assertDomainConstraints(t *testing.T, ctx context.Context, db *sql.DB, fixt
 	assertStatementRejected(t, ctx, db, "terminal investigation mutation", `
 		UPDATE investigations SET current_step = 'late-write' WHERE id = $1
 	`, fixture.investigationID)
+	_, err = db.ExecContext(ctx, `
+		DELETE FROM investigations WHERE id = $1
+	`, fixture.investigationID)
+	var deleteError *pgconn.PgError
+	if !errors.As(err, &deleteError) || deleteError.Code != "23503" {
+		t.Fatalf("terminal investigation deletion error = %v, want SQLSTATE 23503", err)
+	}
 
 	var toolCallID string
 	if err := db.QueryRowContext(ctx, `

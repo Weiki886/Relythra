@@ -70,6 +70,9 @@ func (repository *Postgres) CreateDeploymentEvent(
 			return DeploymentEvent{}, false, fmt.Errorf("%w: invalid UUID", ErrInvalidInput)
 		}
 	}
+	if err := validateOptionalTimeRange(input.StartedAt, input.FinishedAt); err != nil {
+		return DeploymentEvent{}, false, err
+	}
 	metadata, err := normalizedJSON(input.Metadata, `{}`)
 	if err != nil {
 		return DeploymentEvent{}, false, err
@@ -193,6 +196,9 @@ func (repository *Postgres) CreateAlert(
 	if input.ServiceID != "" && !domain.IsID(input.ServiceID) {
 		return Alert{}, false, fmt.Errorf("%w: invalid service UUID", ErrInvalidInput)
 	}
+	if err := validateOptionalTimeRange(input.StartsAt, input.EndsAt); err != nil {
+		return Alert{}, false, err
+	}
 	labels, err := normalizedJSON(input.Labels, `{}`)
 	if err != nil {
 		return Alert{}, false, err
@@ -287,6 +293,17 @@ func (repository *Postgres) CreateAlert(
 		return Alert{}, false, fmt.Errorf("commit alert transaction: %w", err)
 	}
 	return alert, created, nil
+}
+
+func validateOptionalTimeRange(start time.Time, end *time.Time) error {
+	endTime := start
+	if end != nil {
+		endTime = *end
+	}
+	if err := domain.ValidateTimeRange(start, endTime); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return nil
 }
 
 type Investigation struct {

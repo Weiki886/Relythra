@@ -115,6 +115,109 @@ func TestCreateAlertReusesFingerprintWindow(t *testing.T) {
 	}
 }
 
+func TestCreateEventRejectsInvalidTimeWindows(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "invalid-time")
+	repository := NewPostgres(db)
+
+	invalidDeployment := fixture.deploymentInput("invalid-deployment-time")
+	invalidDeployment.StartedAt = time.Time{}
+	if _, _, err := repository.CreateDeploymentEvent(ctx, invalidDeployment); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("missing deployment start error = %v, want ErrInvalidInput", err)
+	}
+
+	invertedDeployment := fixture.deploymentInput("inverted-deployment-time")
+	invertedDeployment.FinishedAt = pointerTo(invertedDeployment.StartedAt.Add(-time.Second))
+	if _, _, err := repository.CreateDeploymentEvent(ctx, invertedDeployment); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("inverted deployment time error = %v, want ErrInvalidInput", err)
+	}
+
+	invalidAlert := fixture.alertInput("invalid-alert-time")
+	invalidAlert.StartsAt = time.Time{}
+	if _, _, err := repository.CreateAlert(ctx, invalidAlert); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("missing alert start error = %v, want ErrInvalidInput", err)
+	}
+
+	invertedAlert := fixture.alertInput("inverted-alert-time")
+	invertedAlert.EndsAt = pointerTo(invertedAlert.StartsAt.Add(-time.Second))
+	if _, _, err := repository.CreateAlert(ctx, invertedAlert); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("inverted alert time error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestEvidenceCannotReferenceToolCallFromAnotherInvestigation(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	first := insertStoreFixture(t, ctx, db, "evidence-owner")
+	second := insertStoreFixture(t, ctx, db, "tool-call-owner")
+
+	var foreignToolCallID string
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO tool_calls (investigation_id, tool_name)
+		VALUES ($1, 'query_metric_template')
+		RETURNING id::text
+	`, second.investigationID).Scan(&foreignToolCallID); err != nil {
+		t.Fatalf("insert foreign tool call: %v", err)
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO evidence (
+			investigation_id, tool_call_id, source_type, entity_type, entity_id,
+			observed_start, observed_end, value_summary, completeness,
+			independence_group, content_hash
+		) VALUES (
+			$1, $2, 'PROMETHEUS', 'service', $3, $4::timestamptz,
+			$4::timestamptz + interval '5 minutes', '{"p95_ms":420}'::jsonb,
+			'COMPLETE', 'metrics', $5
+		)
+	`, first.investigationID, foreignToolCallID, first.serviceID, first.startedAt,
+		strings.Repeat("d", 64))
+	if err == nil {
+		t.Fatal("cross-investigation tool call was accepted")
+	}
+}
+
+func TestDeploymentCandidateCannotLinkAcrossProjects(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	first := insertStoreFixture(t, ctx, db, "candidate-incident")
+	second := insertStoreFixture(t, ctx, db, "candidate-deployment")
+	repository := NewPostgres(db)
+
+	sameProjectDeployment, _, err := repository.CreateDeploymentEvent(
+		ctx,
+		first.deploymentInput("same-project-candidate"),
+	)
+	if err != nil {
+		t.Fatalf("create same-project deployment event: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO deployment_candidates (
+			project_id, incident_id, deployment_event_id, match_status, match_reason
+		) VALUES ($1, $2, $3, 'MATCHED', 'same-project candidate')
+	`, first.projectID, first.incidentID, sameProjectDeployment.ID); err != nil {
+		t.Fatalf("link same-project deployment candidate: %v", err)
+	}
+
+	deployment, _, err := repository.CreateDeploymentEvent(
+		ctx,
+		second.deploymentInput("cross-project-candidate"),
+	)
+	if err != nil {
+		t.Fatalf("create deployment event: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO deployment_candidates (
+			project_id, incident_id, deployment_event_id, match_status, match_reason
+		) VALUES ($1, $2, $3, 'MATCHED', 'invalid cross-project link')
+	`, first.projectID, first.incidentID, deployment.ID)
+	if err == nil {
+		t.Fatal("cross-project deployment candidate was accepted")
+	}
+}
+
 func TestTransitionInvestigationRejectsStaleAndInvalidChanges(t *testing.T) {
 	db := openStoreTestDB(t)
 	ctx := context.Background()
@@ -212,9 +315,9 @@ func TestReportReadsTraceableEvidenceAndDeployments(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO deployment_candidates (
-			incident_id, deployment_event_id, match_status, match_reason
-		) VALUES ($1, $2, 'MATCHED', 'same environment and service')
-	`, fixture.incidentID, deployment.ID); err != nil {
+			project_id, incident_id, deployment_event_id, match_status, match_reason
+		) VALUES ($1, $2, $3, 'MATCHED', 'same environment and service')
+	`, fixture.projectID, fixture.incidentID, deployment.ID); err != nil {
 		t.Fatalf("link deployment candidate: %v", err)
 	}
 
