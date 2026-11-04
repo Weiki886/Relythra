@@ -2,7 +2,7 @@
 
 Relythra 是一个面向发布后异常排查的只读诊断系统：关联发布与代码变更、指标、日志和运行状态，组织可追溯的根因假设与处理建议。
 
-当前仓库仅包含 Issue #2 的工程骨架：Go API 与 Worker、React 健康状态页、PostgreSQL 迁移、Docker Compose 和 CI。业务连接器、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
+当前仓库已完成 Issue #2 的工程骨架和 Issue #3 的领域持久化契约：Go API 与 Worker、React 健康状态页、PostgreSQL 领域迁移、只读追溯 API、Docker Compose 和 CI。业务连接器、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
 
 ## 工具链
 
@@ -27,6 +27,7 @@ Relythra 是一个面向发布后异常排查的只读诊断系统：关联发�
 
 - Web：<http://127.0.0.1:5173>
 - API readiness：<http://127.0.0.1:8080/health/ready>
+- API 只读领域端点：`/api/v1/reports/{id}`、`/api/v1/evidence/{id}`、`/api/v1/deployments/{id}`
 - Worker metrics：<http://127.0.0.1:8081/metrics>
 
 按 `Ctrl+C` 会停止脚本启动的全部进程。默认连接 `postgres://$USER@127.0.0.1:5432/relythra?sslmode=disable`；如果数据库使用其他地址、用户或密码，通过 `RELYTHRA_DATABASE_URL` 覆盖：
@@ -57,6 +58,7 @@ Compose 会等待 PostgreSQL 健康、执行迁移，再启动 API、Worker 和 
 - Web：<http://localhost:3000>
 - API liveness：<http://localhost:8080/health/live>
 - API readiness：<http://localhost:8080/health/ready>
+- API 只读领域端点：`/api/v1/reports/{id}`、`/api/v1/evidence/{id}`、`/api/v1/deployments/{id}`
 - Worker metrics：<http://localhost:8081/metrics>
 
 所有演示端口只绑定回环地址，数据库映射到本机 `15432` 端口。停止服务：
@@ -81,7 +83,11 @@ docker compose --file deploy/compose/compose.yaml run --rm migrate up
 docker compose --file deploy/compose/compose.yaml run --rm migrate down
 ```
 
-`down` 会回滚一个版本，执行前应确认影响。当前初始迁移只记录基线版本，没有领域表。
+`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
+
+`down` 会回滚一个版本，执行前应确认影响。领域迁移的 `down` 会删除领域表和其中的数据，只允许用于隔离的本地或测试环境。API 启动不会自动迁移。
+
+三个领域端点只读，并返回统一请求 ID 和错误包络。数据库为空或资源不存在时返回 `404`，路径 ID 非法时在查询数据库前返回 `400`。当前没有创建这些资源的公开写接口。
 
 ## 本地检查
 
@@ -100,9 +106,16 @@ npm --prefix web run dev
 
 前端开发页需要可访问的 API；直接运行 Go API 时，必须通过 `RELYTHRA_DATABASE_URL` 提供 PostgreSQL 连接串。不要把包含真实凭据的连接串写入仓库。
 
+`make test` 在没有测试数据库时会跳过真实 PostgreSQL 用例。需要验证迁移和事务仓储时，显式提供隔离测试库：
+
+```bash
+RELYTHRA_TEST_DATABASE_URL='postgres://user@127.0.0.1:5432/relythra?sslmode=disable' \
+  go test ./internal/store ./migrations -count=1
+```
+
 ## 完整冒烟
 
-冒烟使用独立 Compose 项目与端口 `18080`、`18081`、`13000`、`15432`，会构建镜像、从空卷迁移、重复执行迁移，并检查 API、Worker 和 Web：
+冒烟使用独立 Compose 项目与端口 `18080`、`18081`、`13000`、`15432`，会构建镜像、从空卷迁移、重复执行迁移，并检查领域表、索引、幂等约束、非法状态回滚、报告关联、只读 API、Worker 和 Web：
 
 ```bash
 RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret ./scripts/smoke.sh
@@ -126,13 +139,13 @@ docker compose --file deploy/compose/compose.yaml config --quiet
 ## 仓库边界
 
 - `cmd/`：API、Worker 和迁移进程入口。
-- `internal/`：Go 共享配置、健康检查与 Worker 能力。
+- `internal/`：Go 领域模型、事务仓储、HTTP 契约、配置、健康检查与 Worker 能力。
 - `web/`：React/TypeScript 工作台与前端测试。
 - `migrations/`：嵌入式、版本化 PostgreSQL 迁移。
 - `deploy/`：Compose 和镜像构建配置。
 - `test/fixtures/`：后续跨服务测试夹具及其说明。
-- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md)。
-- `scripts/smoke.sh`：真实服务端到端冒烟。
+- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md) 和 [ADR 0002](docs/adr/0002-domain-persistence.md)。
+- `scripts/smoke.sh`：真实服务端到端冒烟；领域夹具与断言位于 `scripts/smoke_domain.sql`。
 
 ## 配置与数据边界
 

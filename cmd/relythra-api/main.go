@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Weiki886/relythra/internal/api"
 	"github.com/Weiki886/relythra/internal/config"
 	"github.com/Weiki886/relythra/internal/health"
+	"github.com/Weiki886/relythra/internal/store"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -37,7 +39,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           health.NewHandler(db, slog.Default()),
+		Handler:           newHandler(db, slog.Default()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -62,4 +64,11 @@ func run() error {
 	shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return server.Shutdown(shutdownContext)
+}
+
+func newHandler(db *sql.DB, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/health/", health.NewHandler(db, logger))
+	mux.Handle("/api/v1/", api.NewHandler(store.NewPostgres(db), logger))
+	return mux
 }

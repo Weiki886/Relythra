@@ -27,6 +27,18 @@ curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/
   | grep --fixed-strings '"status":"ok"'
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/ready" \
   | grep --fixed-strings '"status":"ready"'
+"${COMPOSE[@]}" exec -T postgres \
+  psql --set=ON_ERROR_STOP=1 --username relythra --dbname relythra \
+  < "${ROOT_DIR}/scripts/smoke_domain.sql"
+curl --fail --silent --show-error \
+  "http://localhost:${RELYTHRA_API_PORT}/api/v1/reports/10000000-0000-4000-8000-000000000011" \
+  | grep --fixed-strings '"summary":"Deployment introduced a slow query"'
+curl --fail --silent --show-error \
+  "http://localhost:${RELYTHRA_API_PORT}/api/v1/evidence/10000000-0000-4000-8000-000000000009" \
+  | grep --fixed-strings '"source_type":"PROMETHEUS"'
+curl --fail --silent --show-error \
+  "http://localhost:${RELYTHRA_API_PORT}/api/v1/deployments/10000000-0000-4000-8000-000000000004" \
+  | grep --fixed-strings '"source_time_text":"2026-11-04T13:00:00+08:00"'
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_WORKER_PORT}/metrics" \
   | grep --fixed-strings 'relythra_worker_heartbeat_timestamp_seconds'
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_WEB_PORT}/" \
@@ -43,4 +55,4 @@ curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/
   | grep --fixed-strings '"status":"ok"'
 "${COMPOSE[@]}" logs --no-color api | grep --fixed-strings 'readiness check failed'
 
-printf 'Smoke checks passed: migrations, healthy services, and database-loss behavior.\n'
+printf 'Smoke checks passed: migrations, domain constraints, traceable API reads, healthy services, and database-loss behavior.\n'
