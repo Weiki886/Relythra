@@ -4,8 +4,23 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/deploy/compose/compose.yaml"
 
-: "${RELYTHRA_POSTGRES_PASSWORD:?Set RELYTHRA_POSTGRES_PASSWORD before running smoke tests}"
-export RELYTHRA_POSTGRES_PASSWORD
+secret_dir=""
+if [ -n "${RELYTHRA_POSTGRES_PASSWORD:-}" ]; then
+  secret_dir="$(mktemp -d "${TMPDIR:-/tmp}/relythra-secrets.XXXXXX")"
+  RELYTHRA_POSTGRES_PASSWORD_FILE="${secret_dir}/postgres_password"
+  (
+    umask 077
+    printf '%s' "${RELYTHRA_POSTGRES_PASSWORD}" >"${RELYTHRA_POSTGRES_PASSWORD_FILE}"
+  )
+  unset RELYTHRA_POSTGRES_PASSWORD
+fi
+
+: "${RELYTHRA_POSTGRES_PASSWORD_FILE:?Set RELYTHRA_POSTGRES_PASSWORD_FILE or RELYTHRA_POSTGRES_PASSWORD before running smoke tests}"
+test -r "${RELYTHRA_POSTGRES_PASSWORD_FILE}" || {
+  printf 'PostgreSQL password file is not readable: %s\n' "${RELYTHRA_POSTGRES_PASSWORD_FILE}" >&2
+  exit 1
+}
+export RELYTHRA_POSTGRES_PASSWORD_FILE
 export RELYTHRA_API_PORT="${RELYTHRA_API_PORT:-18080}"
 export RELYTHRA_WORKER_PORT="${RELYTHRA_WORKER_PORT:-18081}"
 export RELYTHRA_WEB_PORT="${RELYTHRA_WEB_PORT:-13000}"
@@ -14,6 +29,9 @@ COMPOSE=(docker compose --project-name relythra-smoke --file "${COMPOSE_FILE}")
 
 cleanup() {
   "${COMPOSE[@]}" down --volumes --remove-orphans
+  if [ -n "${secret_dir}" ]; then
+    rm -rf "${secret_dir}"
+  fi
 }
 trap cleanup EXIT
 

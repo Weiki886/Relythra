@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,11 +15,19 @@ import (
 	"github.com/Weiki886/relythra/internal/api"
 	"github.com/Weiki886/relythra/internal/config"
 	"github.com/Weiki886/relythra/internal/health"
+	securitylogging "github.com/Weiki886/relythra/internal/security/logging"
+	"github.com/Weiki886/relythra/internal/security/redact"
 	"github.com/Weiki886/relythra/internal/store"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "initialize API logger failed")
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
 	if err := run(); err != nil {
 		slog.Error("API stopped", "error", err)
 		os.Exit(1)
@@ -30,8 +39,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	filter, err := redact.NewFilter(cfg.DatabaseURL.Reveal())
+	if err != nil {
+		return err
+	}
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr, cfg.DatabaseURL.Reveal())
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(logger)
 
-	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	db, err := sql.Open("pgx", cfg.DatabaseURL.Reveal())
 	if err != nil {
 		return err
 	}
@@ -39,7 +57,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           newHandler(db, slog.Default()),
+		Handler:           newHandler(db, logger, filter),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -66,9 +84,16 @@ func run() error {
 	return server.Shutdown(shutdownContext)
 }
 
-func newHandler(db *sql.DB, logger *slog.Logger) http.Handler {
+func newHandler(db *sql.DB, logger *slog.Logger, filters ...*redact.Filter) http.Handler {
+	filter, err := redact.NewFilter()
+	if err != nil {
+		panic("initialize redaction filter: " + err.Error())
+	}
+	if len(filters) > 0 && filters[0] != nil {
+		filter = filters[0]
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/health/", health.NewHandler(db, logger))
-	mux.Handle("/api/v1/", api.NewHandler(store.NewPostgres(db), logger))
+	mux.Handle("/api/v1/", api.NewHandler(store.NewPostgres(db), logger, filter))
 	return mux
 }

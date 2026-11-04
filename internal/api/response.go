@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/redact"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -17,10 +19,18 @@ type requestIDContextKey struct{}
 
 var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-func WithRequestID(next http.Handler) http.Handler {
+func WithRequestID(next http.Handler, filters ...*redact.Filter) http.Handler {
+	filter, err := redact.NewFilter()
+	if err != nil {
+		panic("initialize request ID redaction filter: " + err.Error())
+	}
+	if len(filters) > 0 && filters[0] != nil {
+		filter = filters[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := r.Header.Get(requestIDHeader)
-		if !safeRequestID.MatchString(requestID) {
+		safeID, redactErr := filter.Text(r.Context(), requestID)
+		if !safeRequestID.MatchString(requestID) || redactErr != nil || safeID != requestID {
 			generated, err := domain.NewID()
 			if err != nil {
 				generated = fmt.Sprintf("request-%d", time.Now().UnixNano())
@@ -54,15 +64,8 @@ type errorEnvelope struct {
 	RequestID string    `json:"request_id"`
 }
 
-func writeData(w http.ResponseWriter, r *http.Request, status int, data any) {
-	writeJSON(w, status, successEnvelope{
-		Data:      data,
-		RequestID: RequestIDFromContext(r.Context()),
-	})
-}
-
 func writeError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
-	writeJSON(w, status, errorEnvelope{
+	_ = writeJSON(w, status, errorEnvelope{
 		Error: errorBody{
 			Code:    code,
 			Message: message,
@@ -71,9 +74,14 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code string,
 	})
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
+func writeJSON(w http.ResponseWriter, status int, body any) error {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		return err
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	_, err := w.Write(encoded.Bytes())
+	return err
 }

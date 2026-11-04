@@ -2,17 +2,27 @@ x-go-build: &go-build
   context: ../..
   dockerfile: deploy/docker/go.Dockerfile
 
+x-database-environment: &database-environment
+  RELYTHRA_DATABASE_HOST: postgres
+  RELYTHRA_DATABASE_PORT: "5432"
+  RELYTHRA_DATABASE_NAME: relythra
+  RELYTHRA_DATABASE_USER: relythra
+  RELYTHRA_DATABASE_SSL_MODE: disable
+  RELYTHRA_DATABASE_PASSWORD_REF: file:/run/secrets/postgres_password
+
 services:
   postgres:
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: relythra
       POSTGRES_USER: relythra
-      POSTGRES_PASSWORD: ${RELYTHRA_POSTGRES_PASSWORD:?Set RELYTHRA_POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     ports:
       - "127.0.0.1:${RELYTHRA_POSTGRES_PORT:-15432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U relythra -d relythra"]
       interval: 2s
@@ -26,7 +36,9 @@ services:
         BINARY: relythra-migrate
     command: ["up"]
     environment:
-      RELYTHRA_DATABASE_URL: "postgres://relythra:${RELYTHRA_POSTGRES_PASSWORD}@postgres:5432/relythra?sslmode=disable"
+      <<: *database-environment
+    secrets:
+      - postgres_password
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,8 +50,10 @@ services:
       args:
         BINARY: relythra-api
     environment:
+      <<: *database-environment
       RELYTHRA_API_ADDR: :8080
-      RELYTHRA_DATABASE_URL: "postgres://relythra:${RELYTHRA_POSTGRES_PASSWORD}@postgres:5432/relythra?sslmode=disable"
+    secrets:
+      - postgres_password
     ports:
       - "127.0.0.1:${RELYTHRA_API_PORT:-8080}:8080"
     depends_on:
@@ -82,3 +96,7 @@ services:
 
 volumes:
   postgres-data:
+
+secrets:
+  postgres_password:
+    file: ${RELYTHRA_POSTGRES_PASSWORD_FILE:?Set RELYTHRA_POSTGRES_PASSWORD_FILE}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/redact"
 	"github.com/Weiki886/relythra/internal/store"
 )
 
@@ -19,19 +20,32 @@ type Reader interface {
 type handler struct {
 	reader Reader
 	logger *slog.Logger
+	filter *redact.Filter
 }
 
-func NewHandler(reader Reader, logger *slog.Logger) http.Handler {
+func NewHandler(reader Reader, logger *slog.Logger, filters ...*redact.Filter) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	apiHandler := &handler{reader: reader, logger: logger}
+	filter := defaultRedactionFilter()
+	if len(filters) > 0 && filters[0] != nil {
+		filter = filters[0]
+	}
+	apiHandler := &handler{reader: reader, logger: logger, filter: filter}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/{id}", apiHandler.getReport)
 	mux.HandleFunc("/api/v1/evidence/{id}", apiHandler.getEvidence)
 	mux.HandleFunc("/api/v1/deployments/{id}", apiHandler.getDeployment)
 	mux.HandleFunc("/api/v1/", apiHandler.notFound)
-	return WithRequestID(mux)
+	return WithRequestID(mux, filter)
+}
+
+func defaultRedactionFilter() *redact.Filter {
+	filter, err := redact.NewFilter()
+	if err != nil {
+		panic("initialize API redaction filter: " + err.Error())
+	}
+	return filter
 }
 
 func (handler *handler) getReport(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +61,7 @@ func (handler *handler) getReport(w http.ResponseWriter, r *http.Request) {
 		handler.writeStoreError(w, r, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, report)
+	handler.writeData(w, r, http.StatusOK, report)
 }
 
 func (handler *handler) getEvidence(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +77,7 @@ func (handler *handler) getEvidence(w http.ResponseWriter, r *http.Request) {
 		handler.writeStoreError(w, r, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, evidence)
+	handler.writeData(w, r, http.StatusOK, evidence)
 }
 
 func (handler *handler) getDeployment(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +93,7 @@ func (handler *handler) getDeployment(w http.ResponseWriter, r *http.Request) {
 		handler.writeStoreError(w, r, err)
 		return
 	}
-	writeData(w, r, http.StatusOK, deployment)
+	handler.writeData(w, r, http.StatusOK, deployment)
 }
 
 func (handler *handler) notFound(w http.ResponseWriter, r *http.Request) {
@@ -95,12 +109,20 @@ func (handler *handler) writeStoreError(w http.ResponseWriter, r *http.Request, 
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, r, http.StatusConflict, "conflict", "resource changed; retry the request")
 	default:
+		safeError, redactErr := handler.filter.Text(r.Context(), err.Error())
+		if redactErr != nil {
+			safeError = "[REDACTION_FAILED]"
+		}
+		safePath, pathErr := handler.filter.Text(r.Context(), r.URL.Path)
+		if pathErr != nil {
+			safePath = "[REDACTION_FAILED]"
+		}
 		handler.logger.ErrorContext(
 			r.Context(),
 			"domain read failed",
 			"request_id", RequestIDFromContext(r.Context()),
-			"path", r.URL.Path,
-			"error", err,
+			"path", safePath,
+			"error", safeError,
 		)
 		writeError(
 			w,
@@ -108,6 +130,37 @@ func (handler *handler) writeStoreError(w http.ResponseWriter, r *http.Request, 
 			http.StatusInternalServerError,
 			"internal_error",
 			"an internal error occurred",
+		)
+	}
+}
+
+func (handler *handler) writeData(w http.ResponseWriter, r *http.Request, status int, data any) {
+	redacted, err := handler.filter.JSON(r.Context(), data)
+	if err != nil {
+		handler.logger.ErrorContext(
+			r.Context(),
+			"response redaction failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"error_code", "redaction_failed",
+		)
+		writeError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"internal_error",
+			"an internal error occurred",
+		)
+		return
+	}
+	if err := writeJSON(w, status, successEnvelope{
+		Data:      redacted,
+		RequestID: RequestIDFromContext(r.Context()),
+	}); err != nil {
+		handler.logger.ErrorContext(
+			r.Context(),
+			"response encoding failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"error_code", "encoding_failed",
 		)
 	}
 }

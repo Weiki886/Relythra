@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Weiki886/relythra/internal/security/redact"
 	"github.com/Weiki886/relythra/internal/store"
 )
 
@@ -171,6 +173,76 @@ func TestReadEndpointsReturnStableErrors(t *testing.T) {
 		)
 		assertErrorResponse(t, response, http.StatusNotFound, "not_found")
 	})
+}
+
+func TestDependencyErrorsAreRedactedInResponseAndLogs(t *testing.T) {
+	t.Parallel()
+
+	const canary = "api-canary-3c71"
+	filter, err := redact.NewFilter(canary)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	reader := &fakeReader{err: errors.New(
+		"Authorization: Bearer " + canary +
+			" postgres://admin:" + canary + "@database:5432/relythra",
+	)}
+
+	response := serve(
+		NewHandler(reader, logger, filter),
+		http.MethodGet,
+		"/api/v1/deployments/"+deploymentID,
+	)
+	assertErrorResponse(t, response, http.StatusInternalServerError, "internal_error")
+
+	for label, output := range map[string]string{
+		"response": response.Body.String(),
+		"log":      logs.String(),
+	} {
+		if strings.Contains(output, canary) {
+			t.Errorf("%s exposed canary: %s", label, output)
+		}
+	}
+	if !strings.Contains(logs.String(), "[REDACTED]") {
+		t.Errorf("log has no redaction marker: %s", logs.String())
+	}
+}
+
+func TestSuccessfulResponsesAreRedacted(t *testing.T) {
+	t.Parallel()
+
+	const canary = "response-canary-2f82"
+	filter, err := redact.NewFilter(canary)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	reader := &fakeReader{
+		evidence: store.Evidence{
+			ID:              evidenceID,
+			InvestigationID: "44444444-4444-4444-8444-444444444444",
+			SourceType:      "LOKI",
+			EntityType:      "service",
+			Completeness:    "COMPLETE",
+			ValueSummary:    json.RawMessage(`{"message":"Authorization: Bearer ` + canary + `"}`),
+		},
+	}
+
+	response := serve(
+		NewHandler(reader, discardLogger(), filter),
+		http.MethodGet,
+		"/api/v1/evidence/"+evidenceID,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), canary) {
+		t.Fatalf("successful response exposed canary: %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "[REDACTED]") {
+		t.Fatalf("successful response has no redaction marker: %s", response.Body.String())
+	}
 }
 
 func serve(handler http.Handler, method string, path string) *httptest.ResponseRecorder {
