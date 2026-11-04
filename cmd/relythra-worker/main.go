@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Weiki886/Relythra/internal/config"
-	"github.com/Weiki886/Relythra/internal/worker"
+	"github.com/Weiki886/relythra/internal/config"
+	"github.com/Weiki886/relythra/internal/worker"
 )
 
 func main() {

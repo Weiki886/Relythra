@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Weiki886/Relythra/internal/config"
+	"github.com/Weiki886/relythra/internal/config"
 )
 
 func environment(values map[string]string) func(string) string {

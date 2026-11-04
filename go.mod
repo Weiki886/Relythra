@@ -1,4 +1,4 @@
-module github.com/Weiki886/Relythra
+module github.com/Weiki886/relythra
 
 go 1.26.0
 

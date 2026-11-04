@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Weiki886/Relythra/internal/health"
+	"github.com/Weiki886/relythra/internal/health"
 )
 
 type checkerFunc func(context.Context) error

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/Weiki886/Relythra/internal/config"
-	"github.com/Weiki886/Relythra/migrations"
+	"github.com/Weiki886/relythra/internal/config"
+	"github.com/Weiki886/relythra/migrations"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
