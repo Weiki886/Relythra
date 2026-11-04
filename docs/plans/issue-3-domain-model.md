@@ -38,14 +38,14 @@
 - 产出 `Investigation.Transition(to InvestigationStatus) error`。
 - 产出 `NormalizeTime(time.Time) time.Time` 与 `ValidateTimeRange(start, end time.Time) error`。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
   - UUID v4 格式与变体正确，连续生成的 ID 不同。
   - 7.6 所有合法转换成功，跳过阶段、回退和终态后继续转换失败。
   - UTC 归一化不改变时刻，空时间和倒置时间窗失败。
-- [ ] **步骤 2：运行 `go test ./internal/domain -run 'Test(NewID|Investigation|Normalize|Validate)'`，确认因类型与函数缺失失败。**
-- [ ] **步骤 3：实现最小编码器、枚举校验、转换表和稳定 `TransitionError`。**
-- [ ] **步骤 4：重跑同一命令，确认全部通过。**
-- [ ] **步骤 5：提交 `feat(domain): add identifiers and investigation state machine`。**
+- [x] **步骤 2：运行 `go test ./internal/domain -run 'Test(NewID|Investigation|Normalize|Validate)'`，确认因类型与函数缺失失败。**
+- [x] **步骤 3：实现最小编码器、枚举校验、转换表和稳定 `TransitionError`。**
+- [x] **步骤 4：重跑同一命令，确认全部通过。**
+- [x] **步骤 5：提交 `feat(domain): add identifiers and investigation state machine`。**
 
 ### Task 2: PostgreSQL 领域 schema 与不可变约束
 
@@ -60,11 +60,11 @@
 - 为服务/环境/发布时间窗、告警指纹、幂等键、外部 ID、状态和关系建立唯一约束与索引。
 - 创建 `enforce_investigation_transition()`、`touch_updated_at()` 和 `reject_mutation()` 触发器。
 
-- [ ] **步骤 1：先用空迁移 Down/Up 定义约束测试场景，确认当前缺少 `000002` 会导致表检查失败。**
-- [ ] **步骤 2：运行空库迁移检查，确认失败原因是领域表不存在。**
-- [ ] **步骤 3：实现完整 schema、约束、索引与触发器。**
-- [ ] **步骤 4：从空库执行 `up`、重复执行 `up`、检查 `down` 与再次 `up`。**
-- [ ] **步骤 5：提交 `feat(data): add domain schema and integrity constraints`。**
+- [x] **步骤 1：先用空迁移 Down/Up 定义约束测试场景，确认当前缺少 `000002` 会导致表检查失败。**
+- [x] **步骤 2：运行空库迁移检查，确认失败原因是领域表不存在。**
+- [x] **步骤 3：实现完整 schema、约束、索引与触发器。**
+- [x] **步骤 4：从空库执行 `up`、重复执行 `up`、检查 `down` 与再次 `up`。**
+- [x] **步骤 5：提交 `feat(data): add domain schema and integrity constraints`。**
 
 ### Task 3: 事务仓储、幂等写入与乐观并发
 
