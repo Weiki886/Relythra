@@ -28,10 +28,20 @@ export RELYTHRA_WEB_PORT="${RELYTHRA_WEB_PORT:-13000}"
 COMPOSE=(docker compose --project-name relythra-smoke --file "${COMPOSE_FILE}")
 
 cleanup() {
-  "${COMPOSE[@]}" down --volumes --remove-orphans
-  if [ -n "${secret_dir}" ]; then
-    rm -rf "${secret_dir}"
+  local exit_status=$?
+  if [ "${exit_status}" -ne 0 ]; then
+    printf 'Compose smoke failed with exit %s; collecting service logs.\n' "${exit_status}" >&2
+    "${COMPOSE[@]}" ps --all || true
+    "${COMPOSE[@]}" logs --no-color --tail 200 postgres migrate api worker web || true
   fi
+  if ! "${COMPOSE[@]}" down --volumes --remove-orphans; then
+    printf 'Failed to remove Compose smoke resources.\n' >&2
+    exit_status=1
+  fi
+  if [ -n "${secret_dir}" ]; then
+    rm -rf "${secret_dir}" || true
+  fi
+  exit "${exit_status}"
 }
 trap cleanup EXIT
 
@@ -45,6 +55,8 @@ curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/
   | grep --fixed-strings '"status":"ok"'
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/ready" \
   | grep --fixed-strings '"status":"ready"'
+test "$("${COMPOSE[@]}" exec -T api awk '$1 == "Uid:" { print $2 }' /proc/1/status)" = "10001"
+"${COMPOSE[@]}" exec -T --user 10001 api test -r /run/relythra-secrets/postgres_password
 "${COMPOSE[@]}" exec -T postgres \
   psql --set=ON_ERROR_STOP=1 --username relythra --dbname relythra \
   < "${ROOT_DIR}/scripts/smoke_domain.sql"

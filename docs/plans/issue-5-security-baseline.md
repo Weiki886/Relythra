@@ -15,7 +15,7 @@
 - 脱敏同时保留字段名；已知 Secret 残留时返回错误，调用方不得回退为原文。
 - 日志、日志摘要和证据必须通过显式截断标记限制长度，不能静默丢弃尾部。
 - `DiagnosisCase.expected_root_cause`、`injection_method`、评分规则和任意未知 Prompt 字段不进入运行时上下文。
-- 审计记录只追加，数据库触发器拒绝更新和删除。
+- 审计记录只追加，数据库触发器拒绝 UPDATE、DELETE 和 TRUNCATE。
 - `000003_security_audit.sql` 只增加新表、触发器和索引；已合入迁移保持不可变。
 
 ## Task 1：SecretRef 解析与安全值对象
@@ -109,13 +109,13 @@
 - `Event` 记录 actor、action、object type/id、result、request ID、脱敏参数摘要和发生时间。
 - `NewPostgresRecorder(*sql.DB, *redact.Filter)` 在依赖缺失时失败。
 - `Recorder.Record` 在写库前验证必填字段、脱敏参数并限制参数 JSON 大小。
-- `audit_events` 只追加；触发器拒绝 UPDATE/DELETE，索引支持对象和请求追踪。
+- `audit_events` 只追加；触发器拒绝 UPDATE/DELETE/TRUNCATE，索引支持对象和请求追踪。
 - 迁移测试先回滚安全迁移，再回滚领域迁移；真实 PostgreSQL 测试验证审计可重建操作且不能读取 Secret。
 
 - [x] **步骤 1：写失败测试**
   - 缺依赖、缺字段、脱敏失败、超长参数均不写库。
   - canary 和 URL/Header 敏感值写入后只能读到 `[REDACTED]`。
-  - 审计事件可按 request/object/action 重建，UPDATE 和 DELETE 被数据库拒绝。
+  - 审计事件可按 request/object/action 重建，UPDATE、DELETE 和 TRUNCATE 被数据库拒绝。
 - [x] **步骤 2：运行单元测试与真实 PostgreSQL 测试，确认 RED。**
 - [x] **步骤 3：实现事件模型、记录器、`000003` 迁移和数据库不可变触发器。**
 - [x] **步骤 4：重跑迁移、审计和仓储测试，确认 GREEN。**
@@ -171,7 +171,8 @@
 - [x] **步骤 4：运行 Compose 配置检查和隔离冒烟。**
 - [x] **步骤 5：按 `code-review` 固定 `origin/main...HEAD`，检查需求、正确性、安全、迁移、兼容性和无关 diff。**
 - [x] **步骤 6：修复自审问题，重复受影响验证。**
-- [ ] **步骤 7：推送分支、创建关联 Issue #5 的中文 PR，设置 M1 和 Issue 标签，等待远程三项 CI。**
+- [x] **步骤 7：推送分支、创建关联 Issue #5 的中文 PR，设置 M1 和 Issue 标签。**
+- [ ] **步骤 8：等待最终 HEAD 上的 Backend、Frontend 和 Compose smoke 三项远程 CI。**
 
 ## 验收映射
 
@@ -180,21 +181,25 @@
 | canary 不进入日志/响应/审计/Evidence/Prompt | secrets、redact、prompt、audit、API 单元测试和真实 PostgreSQL 测试 |
 | Authorization、URL token、常见密钥格式脱敏且保留字段名 | 表驱动脱敏测试 |
 | DiagnosisCase 答案和注入状态不进入模型上下文 | Prompt 未知字段与保留字段拒绝测试 |
-| 审计可重建关键操作且不能读取 Secret | 审计查询测试和数据库 UPDATE/DELETE 拒绝测试 |
+| 审计可重建关键操作且不能读取 Secret | 审计查询测试和数据库 UPDATE/DELETE/TRUNCATE 拒绝测试 |
 | 脱敏失败关闭、超长内容显式截断 | `ErrUnsafeOutput` 与 `UntrustedData.truncated` 测试 |
 | 缺少 SecretRef 时连接器启动失败 | SecretRef/config 单元测试与后续连接器配置接口 |
 
 ## Ruling 与验证记录
 
 - Ruling：Issue 要求审计表“只允许追加”，原设计仅用行级触发器拒绝 `UPDATE/DELETE`，表所有者仍可执行 `TRUNCATE`。决定增加独立的 `BEFORE TRUNCATE ... FOR EACH STATEMENT` 触发器，并同时加入真实 PostgreSQL 与 Compose 冒烟断言。错误代价是迁移多一个对象，但避免了整表审计证据可被单条语句删除的安全缺口。
+- Ruling：首次远程 Compose 冒烟中 `migrate` 在 Linux Runner 上退出 1，而同一流程在 Docker Desktop 通过。根因是宿主生成的 `0600` Secret 文件所有权被带入容器，非 root 镜像用户没有稳定读取权限。Compose 的长语法 `uid/gid/mode` 对 file secret 会明确忽略，因此决定由镜像入口以 root 将 Secret 复制到应用用户独占的 `0440` 临时文件，再通过 `su-exec` 立即降权执行，并在冒烟失败路径收集服务日志。错误代价是镜像包含一个受审计的 root 启动阶段和固定 UID/GID 契约。
 - RED：`RELYTHRA_TEST_DATABASE_URL=... go test ./internal/security/audit -run TestPostgresRecorderPersistsRedactedImmutableAuditEvents -count=1` 失败，`TRUNCATE audit_events` 返回 `nil`，未产生预期的 SQLSTATE `23001`。
+- RED：GitHub Actions `Compose smoke` 在 `relythra-smoke-migrate-1` 启动后约 0.5 秒以退出码 1 结束；失败日志未包含容器 stderr，确认现有冒烟脚本在 cleanup 前缺少容器日志证据。
+- RED：入口脚本改为 root 交接 Secret 后执行 `su-exec`，API 健康且 `/proc/1/status` 显示 UID `10001`；冒烟脚本却通过 `compose exec api id -u` 检查到 Docker Compose 调试进程的默认 root UID 并失败，确认断言测错了进程。
 - GREEN：补充语句级触发器后同一测试通过，确认 `UPDATE`、`DELETE`、`TRUNCATE` 均被数据库拒绝。
 - `make fmt-check vet test build`：格式、vet、全部 Go 测试和构建通过。
 - `make web-check`：ESLint、TypeScript、3 个 Vitest 用例和生产构建通过。
 - `RELYTHRA_TEST_DATABASE_URL=... go test ./internal/store ./internal/security/audit ./migrations -count=1`：真实 PostgreSQL 集成测试通过。
 - `RELYTHRA_POSTGRES_PASSWORD_FILE=... make compose-config`：Compose 配置渲染通过。
 - `RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke`：隔离 Compose 冒烟通过，覆盖迁移、领域约束、审计不可变性、可追溯 API 读取、服务健康和数据库失联行为。
-- `bash -n scripts/dev.sh scripts/smoke.sh && ./scripts/dev.sh --help`：脚本语法与本地非 Docker 启动入口帮助通过。
+- `gitleaks dir /repo --redact --no-banner --verbose`：公开工作树扫描完成，`no leaks found`；AWS 测试样例改为运行时拼接，已知 Secret 使用明确的低熵测试值。
+- `bash -n scripts/dev.sh scripts/smoke.sh deploy/docker/entrypoint.sh && ./scripts/dev.sh --help`：脚本语法与本地非 Docker 启动入口帮助通过。
 
 ## 回滚
 

@@ -18,6 +18,7 @@ func TestTextRedactsCredentialsAndPreservesFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
+	awsKey := "AKIA" + strings.Repeat("0", 16)
 
 	input := strings.Join([]string{
 		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.signature",
@@ -25,7 +26,7 @@ func TestTextRedactsCredentialsAndPreservesFieldNames(t *testing.T) {
 		"endpoint=https://deployer:password@example.test/hook?access_token=query-canary&service=checkout",
 		"github=" + "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
 		"slack=xoxb-1234567890-canary",
-		"aws=AKIAABCDEFGHIJKLMNOP",
+		"aws=" + awsKey,
 		"openai=sk-proj-abcdefghijklmnopqrstuvwxyz",
 		"-----BEGIN PRIVATE KEY-----\nprivate-key-canary\n-----END PRIVATE KEY-----",
 	}, "\n")
@@ -42,7 +43,7 @@ func TestTextRedactsCredentialsAndPreservesFieldNames(t *testing.T) {
 		"password@example.test",
 		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",
 		"xoxb-1234567890-canary",
-		"AKIAABCDEFGHIJKLMNOP",
+		awsKey,
 		"sk-proj-abcdefghijklmnopqrstuvwxyz",
 		"private-key-canary",
 	} {

@@ -37,7 +37,7 @@ Relythra 后续会同时读取 GitHub、Grafana、Prometheus、Loki、Docker 和
 ### 不可变审计
 
 - `audit_events` 记录 actor、action、对象类型与 ID、结果、request ID、脱敏参数摘要和发生时间。标识字段在验证和写库前同样经过脱敏。
-- 审计表只允许追加，PostgreSQL 触发器拒绝 UPDATE 和 DELETE。索引支持按对象、请求和 actor/action 重建关键操作。
+- 审计表只允许追加，PostgreSQL 行级触发器拒绝 UPDATE 和 DELETE，语句级触发器拒绝 TRUNCATE。索引支持按对象、请求和 actor/action 重建关键操作。
 - 数据库约束是第二道防线；应用角色不应拥有绕过触发器所需的超级用户能力。生产部署仍需单独的数据库角色、备份和保留期策略。
 
 ### 连接器只读边界

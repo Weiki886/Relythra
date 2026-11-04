@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const canarySecret = "relythra-canary-secret-9f2b"
+const canarySecret = "fixture-only-value"
 
 func TestResolverResolvesEnvironmentAndFileReferences(t *testing.T) {
 	t.Parallel()

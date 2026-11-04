@@ -91,7 +91,7 @@ docker compose --file deploy/compose/compose.yaml run --rm migrate up
 docker compose --file deploy/compose/compose.yaml run --rm migrate down
 ```
 
-`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。`000003_security_audit.sql` 创建只允许追加的安全审计表和索引，触发器拒绝 UPDATE/DELETE。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
+`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。`000003_security_audit.sql` 创建只允许追加的安全审计表和索引，触发器拒绝 UPDATE/DELETE/TRUNCATE。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
 
 `down` 会回滚一个版本，执行前应确认影响。领域迁移的 `down` 会删除领域表和其中的数据，只允许用于隔离的本地或测试环境。API 启动不会自动迁移。
 
