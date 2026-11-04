@@ -125,9 +125,43 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	assertDomainConstraints(t, ctx, db, fixture)
 
 	if err := goose.DownContext(ctx, db, "."); err != nil {
-		t.Fatalf("roll back security audit migration: %v", err)
+		t.Fatalf("roll back datasource mapping constraints migration: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'data_source_mappings'
+		  AND column_name = 'version'
+	`).Scan(&count); err != nil {
+		t.Fatalf("check mapping version rollback: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("data_source_mappings.version still exists after mapping constraints rollback")
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname = 'data_source_mappings_active_identity_idx'
+	`).Scan(&count); err != nil {
+		t.Fatalf("check mapping index rollback: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("active mapping unique index still exists after mapping constraints rollback")
 	}
 	var relation *string
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".projects").Scan(&relation); err != nil {
+		t.Fatalf("check project before security rollback: %v", err)
+	}
+	if relation == nil {
+		t.Fatalf("projects disappeared before security rollback")
+	}
+
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back security audit migration: %v", err)
+	}
 	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".audit_events").Scan(&relation); err != nil {
 		t.Fatalf("check audit rollback: %v", err)
 	}
