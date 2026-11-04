@@ -25,7 +25,8 @@ BEGIN
         'notifications',
         'deployment_candidates',
         'hypothesis_evidence',
-        'investigation_transition_audits'
+        'investigation_transition_audits',
+        'audit_events'
     ]) AS expected(relation_name)
     WHERE to_regclass(relation_name) IS NULL;
 
@@ -49,11 +50,13 @@ BEGIN
           'alerts_service_started_idx',
           'investigations_status_updated_idx',
           'evidence_investigation_observed_idx',
-          'reports_generated_idx'
+          'reports_generated_idx',
+          'audit_events_object_idx',
+          'audit_events_request_idx'
       );
 
-    IF actual_indexes <> 6 THEN
-        RAISE EXCEPTION 'expected 6 domain indexes, found %', actual_indexes;
+    IF actual_indexes <> 8 THEN
+        RAISE EXCEPTION 'expected 8 domain and audit indexes, found %', actual_indexes;
     END IF;
 END;
 $$;
@@ -372,6 +375,60 @@ BEGIN
           AND match_status = 'MATCHED'
     ) <> 1 THEN
         RAISE EXCEPTION 'report deployment association is missing';
+    END IF;
+END;
+$$;
+
+INSERT INTO audit_events (
+    actor, action, object_type, object_id, result, request_id, parameters, occurred_at
+) VALUES (
+    'smoke',
+    'report.generated',
+    'report',
+    '10000000-0000-4000-8000-000000000011',
+    'SUCCEEDED',
+    'smoke-request-1',
+    '{"authorization":"[REDACTED]","source":"smoke"}'::jsonb,
+    '2026-11-04T05:06:00Z'
+);
+
+DO $$
+DECLARE
+    audit_id bigint;
+BEGIN
+    SELECT id INTO audit_id
+    FROM audit_events
+    WHERE request_id = 'smoke-request-1';
+
+    BEGIN
+        UPDATE audit_events SET actor = 'tampered' WHERE id = audit_id;
+        RAISE EXCEPTION 'audit mutation was accepted';
+    EXCEPTION
+        WHEN SQLSTATE '23001' THEN NULL;
+    END;
+
+    BEGIN
+        DELETE FROM audit_events WHERE id = audit_id;
+        RAISE EXCEPTION 'audit deletion was accepted';
+    EXCEPTION
+        WHEN SQLSTATE '23001' THEN NULL;
+    END;
+
+    BEGIN
+        TRUNCATE audit_events;
+        RAISE EXCEPTION 'audit truncation was accepted';
+    EXCEPTION
+        WHEN SQLSTATE '23001' THEN NULL;
+    END;
+
+    IF (
+        SELECT count(*)
+        FROM audit_events
+        WHERE id = audit_id
+          AND parameters->>'authorization' = '[REDACTED]'
+          AND parameters->>'source' = 'smoke'
+    ) <> 1 THEN
+        RAISE EXCEPTION 'redacted audit event is not readable';
     END IF;
 END;
 $$;

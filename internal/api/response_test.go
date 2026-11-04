@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/redact"
 )
 
 func TestWithRequestIDReusesSafeValue(t *testing.T) {
@@ -57,6 +58,34 @@ func TestWithRequestIDReplacesUnsafeOrOversizedValue(t *testing.T) {
 				t.Fatalf("response request ID = %q, want %q", response.Header().Get("X-Request-ID"), seen)
 			}
 		})
+	}
+}
+
+func TestWithRequestIDReplacesKnownSecret(t *testing.T) {
+	const canary = "request-id-canary-812c"
+	filter, err := redact.NewFilter(canary)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	var seen string
+	handler := WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = RequestIDFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}), filter)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Request-ID", canary)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if seen == canary {
+		t.Fatal("known secret was reused as a request ID")
+	}
+	if !domain.IsID(seen) {
+		t.Fatalf("generated request ID %q is not a UUID", seen)
+	}
+	if response.Header().Get("X-Request-ID") != seen {
+		t.Fatalf("response request ID = %q, want %q", response.Header().Get("X-Request-ID"), seen)
 	}
 }
 

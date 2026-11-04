@@ -4,8 +4,23 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/deploy/compose/compose.yaml"
 
-: "${RELYTHRA_POSTGRES_PASSWORD:?Set RELYTHRA_POSTGRES_PASSWORD before running smoke tests}"
-export RELYTHRA_POSTGRES_PASSWORD
+secret_dir=""
+if [ -n "${RELYTHRA_POSTGRES_PASSWORD:-}" ]; then
+  secret_dir="$(mktemp -d "${TMPDIR:-/tmp}/relythra-secrets.XXXXXX")"
+  RELYTHRA_POSTGRES_PASSWORD_FILE="${secret_dir}/postgres_password"
+  (
+    umask 077
+    printf '%s' "${RELYTHRA_POSTGRES_PASSWORD}" >"${RELYTHRA_POSTGRES_PASSWORD_FILE}"
+  )
+  unset RELYTHRA_POSTGRES_PASSWORD
+fi
+
+: "${RELYTHRA_POSTGRES_PASSWORD_FILE:?Set RELYTHRA_POSTGRES_PASSWORD_FILE or RELYTHRA_POSTGRES_PASSWORD before running smoke tests}"
+test -r "${RELYTHRA_POSTGRES_PASSWORD_FILE}" || {
+  printf 'PostgreSQL password file is not readable: %s\n' "${RELYTHRA_POSTGRES_PASSWORD_FILE}" >&2
+  exit 1
+}
+export RELYTHRA_POSTGRES_PASSWORD_FILE
 export RELYTHRA_API_PORT="${RELYTHRA_API_PORT:-18080}"
 export RELYTHRA_WORKER_PORT="${RELYTHRA_WORKER_PORT:-18081}"
 export RELYTHRA_WEB_PORT="${RELYTHRA_WEB_PORT:-13000}"
@@ -13,7 +28,20 @@ export RELYTHRA_WEB_PORT="${RELYTHRA_WEB_PORT:-13000}"
 COMPOSE=(docker compose --project-name relythra-smoke --file "${COMPOSE_FILE}")
 
 cleanup() {
-  "${COMPOSE[@]}" down --volumes --remove-orphans
+  local exit_status=$?
+  if [ "${exit_status}" -ne 0 ]; then
+    printf 'Compose smoke failed with exit %s; collecting service logs.\n' "${exit_status}" >&2
+    "${COMPOSE[@]}" ps --all || true
+    "${COMPOSE[@]}" logs --no-color --tail 200 postgres migrate api worker web || true
+  fi
+  if ! "${COMPOSE[@]}" down --volumes --remove-orphans; then
+    printf 'Failed to remove Compose smoke resources.\n' >&2
+    exit_status=1
+  fi
+  if [ -n "${secret_dir}" ]; then
+    rm -rf "${secret_dir}" || true
+  fi
+  exit "${exit_status}"
 }
 trap cleanup EXIT
 
@@ -27,6 +55,8 @@ curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/
   | grep --fixed-strings '"status":"ok"'
 curl --fail --silent --show-error "http://localhost:${RELYTHRA_API_PORT}/health/ready" \
   | grep --fixed-strings '"status":"ready"'
+test "$("${COMPOSE[@]}" exec -T api awk '$1 == "Uid:" { print $2 }' /proc/1/status)" = "10001"
+"${COMPOSE[@]}" exec -T --user 10001 api test -r /run/relythra-secrets/postgres_password
 "${COMPOSE[@]}" exec -T postgres \
   psql --set=ON_ERROR_STOP=1 --username relythra --dbname relythra \
   < "${ROOT_DIR}/scripts/smoke_domain.sql"

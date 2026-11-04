@@ -7,12 +7,19 @@ import (
 	"os"
 
 	"github.com/Weiki886/relythra/internal/config"
+	securitylogging "github.com/Weiki886/relythra/internal/security/logging"
 	"github.com/Weiki886/relythra/migrations"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
 
 func main() {
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "initialize migration logger failed")
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("migration failed", "error", err)
 		os.Exit(1)
@@ -28,8 +35,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr, cfg.DatabaseURL.Reveal())
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(logger)
 
-	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	db, err := sql.Open("pgx", cfg.DatabaseURL.Reveal())
 	if err != nil {
 		return err
 	}
