@@ -172,7 +172,7 @@
 - [x] **步骤 5：按 `code-review` 固定 `origin/main...HEAD`，检查需求、正确性、安全、迁移、兼容性和无关 diff。**
 - [x] **步骤 6：修复自审问题，重复受影响验证。**
 - [x] **步骤 7：推送分支、创建关联 Issue #5 的中文 PR，设置 M1 和 Issue 标签。**
-- [ ] **步骤 8：等待最终 HEAD 上的 Backend、Frontend 和 Compose smoke 三项远程 CI。**
+- [x] **步骤 8：等待最终 HEAD 上的 Backend、Frontend 和 Compose smoke 三项远程 CI。**
 
 ## 验收映射
 
@@ -200,6 +200,7 @@
 - `RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke`：隔离 Compose 冒烟通过，覆盖迁移、领域约束、审计不可变性、可追溯 API 读取、服务健康和数据库失联行为。
 - `gitleaks dir /repo --redact --no-banner --verbose`：公开工作树扫描完成，`no leaks found`；AWS 测试样例改为运行时拼接，已知 Secret 使用明确的低熵测试值。
 - `bash -n scripts/dev.sh scripts/smoke.sh deploy/docker/entrypoint.sh && ./scripts/dev.sh --help`：脚本语法与本地非 Docker 启动入口帮助通过。
+- GitHub Actions run `41802666913`：Commit `8f6c33f` 上的 Backend、Frontend 和 Compose smoke 三项必需检查全部通过。
 
 ## 回滚
 
