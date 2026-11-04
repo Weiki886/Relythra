@@ -41,24 +41,24 @@ type CreateDeploymentEventInput struct {
 }
 
 type DeploymentEvent struct {
-	ID              string
-	ProjectID       string
-	ServiceID       string
-	ReleaseID       string
-	Environment     string
-	SourceSystem    string
-	IdempotencyKey  string
-	Status          string
-	StartedAt       time.Time
-	FinishedAt      *time.Time
-	Version         string
-	CommitSHA       string
-	ImageDigest     string
-	InstanceCount   int
-	SourceReference string
-	SourceTimezone  string
-	SourceTimeText  string
-	Metadata        json.RawMessage
+	ID              string          `json:"id"`
+	ProjectID       string          `json:"project_id"`
+	ServiceID       string          `json:"service_id"`
+	ReleaseID       string          `json:"release_id"`
+	Environment     string          `json:"environment"`
+	SourceSystem    string          `json:"source_system"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	Status          string          `json:"status"`
+	StartedAt       time.Time       `json:"started_at"`
+	FinishedAt      *time.Time      `json:"finished_at"`
+	Version         string          `json:"version"`
+	CommitSHA       string          `json:"commit_sha"`
+	ImageDigest     string          `json:"image_digest"`
+	InstanceCount   int             `json:"instance_count"`
+	SourceReference string          `json:"source_reference"`
+	SourceTimezone  string          `json:"source_timezone"`
+	SourceTimeText  string          `json:"source_time_text"`
+	Metadata        json.RawMessage `json:"metadata"`
 }
 
 func (repository *Postgres) CreateDeploymentEvent(
@@ -164,23 +164,23 @@ type CreateAlertInput struct {
 }
 
 type Alert struct {
-	ID              string
-	ProjectID       string
-	ServiceID       *string
-	Environment     *string
-	Fingerprint     string
-	IdempotencyKey  string
-	Status          string
-	Severity        string
-	Summary         string
-	StartsAt        time.Time
-	EndsAt          *time.Time
-	Labels          json.RawMessage
-	Annotations     json.RawMessage
-	RedactedPayload json.RawMessage
-	SourceReference string
-	SourceTimezone  string
-	SourceTimeText  string
+	ID              string          `json:"id"`
+	ProjectID       string          `json:"project_id"`
+	ServiceID       *string         `json:"service_id"`
+	Environment     *string         `json:"environment"`
+	Fingerprint     string          `json:"fingerprint"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	Status          string          `json:"status"`
+	Severity        string          `json:"severity"`
+	Summary         string          `json:"summary"`
+	StartsAt        time.Time       `json:"starts_at"`
+	EndsAt          *time.Time      `json:"ends_at"`
+	Labels          json.RawMessage `json:"labels"`
+	Annotations     json.RawMessage `json:"annotations"`
+	RedactedPayload json.RawMessage `json:"redacted_payload"`
+	SourceReference string          `json:"source_reference"`
+	SourceTimezone  string          `json:"source_timezone"`
+	SourceTimeText  string          `json:"source_time_text"`
 }
 
 func (repository *Postgres) CreateAlert(
@@ -290,20 +290,20 @@ func (repository *Postgres) CreateAlert(
 }
 
 type Investigation struct {
-	ID            string
-	IncidentID    string
-	ServiceID     *string
-	Environment   *string
-	Attempt       int
-	Version       int64
-	Status        domain.InvestigationStatus
-	CurrentStep   *string
-	Model         *string
-	PromptVersion *string
-	StartedAt     time.Time
-	CompletedAt   *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID            string                     `json:"id"`
+	IncidentID    string                     `json:"incident_id"`
+	ServiceID     *string                    `json:"service_id"`
+	Environment   *string                    `json:"environment"`
+	Attempt       int                        `json:"attempt"`
+	Version       int64                      `json:"version"`
+	Status        domain.InvestigationStatus `json:"status"`
+	CurrentStep   *string                    `json:"current_step"`
+	Model         *string                    `json:"model"`
+	PromptVersion *string                    `json:"prompt_version"`
+	StartedAt     time.Time                  `json:"started_at"`
+	CompletedAt   *time.Time                 `json:"completed_at"`
+	CreatedAt     time.Time                  `json:"created_at"`
+	UpdatedAt     time.Time                  `json:"updated_at"`
 }
 
 func (repository *Postgres) TransitionInvestigation(
@@ -385,38 +385,38 @@ func (repository *Postgres) TransitionInvestigation(
 }
 
 type Evidence struct {
-	ID                string
-	InvestigationID   string
-	ToolCallID        *string
-	SourceType        string
-	EntityType        string
-	EntityID          *string
-	ObservedStart     time.Time
-	ObservedEnd       time.Time
-	QueryText         string
-	RawReference      string
-	ValueSummary      json.RawMessage
-	Completeness      string
-	FreshnessSeconds  *int
-	IndependenceGroup string
-	ContentHash       string
-	SourceTimezone    string
-	SourceTimeText    string
-	CreatedAt         time.Time
+	ID                string          `json:"id"`
+	InvestigationID   string          `json:"investigation_id"`
+	ToolCallID        *string         `json:"tool_call_id"`
+	SourceType        string          `json:"source_type"`
+	EntityType        string          `json:"entity_type"`
+	EntityID          *string         `json:"entity_id"`
+	ObservedStart     time.Time       `json:"observed_start"`
+	ObservedEnd       time.Time       `json:"observed_end"`
+	QueryText         string          `json:"query_text"`
+	RawReference      string          `json:"raw_reference"`
+	ValueSummary      json.RawMessage `json:"value_summary"`
+	Completeness      string          `json:"completeness"`
+	FreshnessSeconds  *int            `json:"freshness_seconds"`
+	IndependenceGroup string          `json:"independence_group"`
+	ContentHash       string          `json:"content_hash"`
+	SourceTimezone    string          `json:"source_timezone"`
+	SourceTimeText    string          `json:"source_time_text"`
+	CreatedAt         time.Time       `json:"created_at"`
 }
 
 type Report struct {
-	ID               string
-	InvestigationID  string
-	ResultStatus     string
-	Confidence       string
-	Summary          string
-	Recommendations  json.RawMessage
-	DataGaps         json.RawMessage
-	Timeline         json.RawMessage
-	GeneratedAt      time.Time
-	Evidence         []Evidence
-	DeploymentEvents []DeploymentEvent
+	ID               string            `json:"id"`
+	InvestigationID  string            `json:"investigation_id"`
+	ResultStatus     string            `json:"result_status"`
+	Confidence       string            `json:"confidence"`
+	Summary          string            `json:"summary"`
+	Recommendations  json.RawMessage   `json:"recommendations"`
+	DataGaps         json.RawMessage   `json:"data_gaps"`
+	Timeline         json.RawMessage   `json:"timeline"`
+	GeneratedAt      time.Time         `json:"generated_at"`
+	Evidence         []Evidence        `json:"evidence"`
+	DeploymentEvents []DeploymentEvent `json:"deployment_events"`
 }
 
 func (repository *Postgres) GetReport(ctx context.Context, id string) (Report, error) {

@@ -105,11 +105,11 @@
 - 产出 `GET /api/v1/reports/{id}`、`GET /api/v1/evidence/{id}`、`GET /api/v1/deployments/{id}`。
 - 仓储接口由 handler 注入，单元测试使用受控 fake，真实数据库链路由冒烟覆盖。
 
-- [ ] **步骤 1：写失败测试覆盖 request ID 复用/生成、错误包络、无效 ID、404、依赖错误脱敏和成功读取。**
-- [ ] **步骤 2：运行 API 单元测试，确认因路由与响应函数缺失失败。**
-- [ ] **步骤 3：实现响应辅助函数、请求 ID 中间件、只读路由和 API 装配。**
-- [ ] **步骤 4：重跑 API 与 health 测试，确认路由兼容且错误稳定。**
-- [ ] **步骤 5：提交 `feat(api): expose traceable domain read contracts`。**
+- [x] **步骤 1：写失败测试覆盖 request ID 复用/生成、错误包络、无效 ID、404、依赖错误脱敏和成功读取。**
+- [x] **步骤 2：运行 API 单元测试，确认因路由与响应函数缺失失败。**
+- [x] **步骤 3：实现响应辅助函数、请求 ID 中间件、只读路由和 API 装配。**
+- [x] **步骤 4：重跑 API 与 health 测试，确认路由兼容且错误稳定。**
+- [x] **步骤 5：提交 `feat(api): expose traceable domain read contracts`。**
 
 ### Task 5: ADR、运行文档与真实 PostgreSQL 冒烟
 
