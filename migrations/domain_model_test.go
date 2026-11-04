@@ -83,6 +83,7 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"investigation_transition_audits",
 		"deployment_candidates",
 		"hypothesis_evidence",
+		"audit_events",
 	} {
 		var relation *string
 		if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+"."+table).Scan(&relation); err != nil {
@@ -101,6 +102,7 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"evidence_reject_mutation",
 		"hypotheses_reject_mutation",
 		"reports_reject_mutation",
+		"audit_events_reject_mutation",
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
@@ -123,9 +125,25 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	assertDomainConstraints(t, ctx, db, fixture)
 
 	if err := goose.DownContext(ctx, db, "."); err != nil {
-		t.Fatalf("roll back domain migration: %v", err)
+		t.Fatalf("roll back security audit migration: %v", err)
 	}
 	var relation *string
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".audit_events").Scan(&relation); err != nil {
+		t.Fatalf("check audit rollback: %v", err)
+	}
+	if relation != nil {
+		t.Fatalf("audit_events still exists after security rollback")
+	}
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".projects").Scan(&relation); err != nil {
+		t.Fatalf("check project before domain rollback: %v", err)
+	}
+	if relation == nil {
+		t.Fatalf("projects disappeared before domain rollback")
+	}
+
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back domain migration: %v", err)
+	}
 	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".projects").Scan(&relation); err != nil {
 		t.Fatalf("check domain rollback: %v", err)
 	}
