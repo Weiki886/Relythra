@@ -182,8 +182,8 @@ PR 标题必须使用英文，正文可以使用中文。PR 必须：
 make fmt-check vet test build
 make web-install
 make web-check
-RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make compose-config
-RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make check
+RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password make compose-config
+RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password make check
 RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke
 ```
 
