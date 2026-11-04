@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Weiki886/Relythra/internal/config"
-	"github.com/Weiki886/Relythra/internal/health"
+	"github.com/Weiki886/relythra/internal/config"
+	"github.com/Weiki886/relythra/internal/health"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

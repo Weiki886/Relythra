@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Weiki886/Relythra/internal/worker"
+	"github.com/Weiki886/relythra/internal/worker"
 )
 
 func TestHeartbeatStartUpdatesLastBeat(t *testing.T) {
