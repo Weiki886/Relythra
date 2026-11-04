@@ -82,11 +82,11 @@
 - 产出 `GetReport`、`GetEvidence` 与 `GetDeploymentEvent` 只读方法。
 - 产出 `ErrNotFound`、`ErrConflict`、`ErrInvalidTransition`。
 
-- [ ] **步骤 1：写仓储接口测试，覆盖幂等写入、条件更新、非法转换和终态保护。**
-- [ ] **步骤 2：在真实 PostgreSQL 运行相关测试，确认因仓储不存在而失败。**
-- [ ] **步骤 3：用参数化 SQL 和事务实现最少仓储能力，错误分类不泄露数据库信息。**
-- [ ] **步骤 4：重跑仓储测试，确认数据库状态与返回值符合契约。**
-- [ ] **步骤 5：提交 `feat(store): persist domain transitions idempotently`。**
+- [x] **步骤 1：写仓储接口测试，覆盖幂等写入、条件更新、非法转换和终态保护。**
+- [x] **步骤 2：在真实 PostgreSQL 运行相关测试，确认因仓储不存在而失败。**
+- [x] **步骤 3：用参数化 SQL 和事务实现最少仓储能力，错误分类不泄露数据库信息。**
+- [x] **步骤 4：重跑仓储测试，确认数据库状态与返回值符合契约。**
+- [x] **步骤 5：提交 `feat(store): persist domain transitions idempotently`。**
 
 ### Task 4: 统一 HTTP 契约与可追溯只读 API
 
