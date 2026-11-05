@@ -1,0 +1,42 @@
+map_hash_bucket_size 128;
+map $http_authorization $read_allowed {
+  default 0;
+  "Bearer ${READ_TOKEN}" 1;
+}
+map $uri $prometheus_path_allowed {
+  default 0;
+  ~^/(api/v1/(query|query_range|labels|series|targets|rules|status/buildinfo)|-/ready)$ 1;
+}
+map $uri $loki_path_allowed {
+  default 0;
+  ~^/(loki/api/v1/(query|query_range|labels|series|status/buildinfo|label/[a-zA-Z_][a-zA-Z0-9_]*/values)|ready)$ 1;
+}
+server {
+  listen 9090;
+  access_log off;
+  server_tokens off;
+  location = /healthz { return 200 'ok'; }
+  location / {
+    if ($read_allowed = 0) { return 401; }
+    if ($request_method != GET) { return 403; }
+    if ($prometheus_path_allowed = 0) { return 403; }
+    proxy_pass http://prometheus-store:9090;
+    proxy_set_header Authorization '';
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 10s;
+  }
+}
+server {
+  listen 3100;
+  access_log off;
+  server_tokens off;
+  location / {
+    if ($read_allowed = 0) { return 401; }
+    if ($request_method != GET) { return 403; }
+    if ($loki_path_allowed = 0) { return 403; }
+    proxy_pass http://loki-store:3100;
+    proxy_set_header Authorization '';
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 10s;
+  }
+}

@@ -9,7 +9,7 @@ Relythra 面向发布后异常排查，关联发布、代码变更、指标、�
 - 系统以只读诊断为主。不得自动执行回滚、重启、扩容、配置修改或其他外部写操作。
 - Agent 输出是根因假设，不是未经证据支持的绝对结论。无法证明时必须显式返回证据不足或 `inconclusive`。
 - 证据必须能回到原始来源核验；区分事实、推断、反证和未知项。
-- 当前仓库处于 `M1 契约与夹具` 阶段，已有 Go/React/PostgreSQL/Compose 骨架、数据源映射管理、固定查询计划和固定路径连接测试；真实 Prometheus/LogQL 业务查询、Agent、完整工作台和通知能力尚未实现。文档和 PR 不得把规划能力写成已交付能力。
+- 当前仓库处于 `M1 契约与夹具` 阶段，已有 Go/React/PostgreSQL/Compose 骨架、数据源映射管理、固定查询计划、固定路径连接测试和可选 Compose 示例业务/观测拓扑；真实 Prometheus/LogQL 业务查询、Agent、完整工作台和通知能力尚未实现。文档和 PR 不得把规划能力写成已交付能力。
 - 仓库是公开仓库。Issue、PR、Commit、测试夹具、日志、截图和 AI Prompt 都按公开数据处理。
 
 产品范围和阶段目标以 Issue #1 的 Proposal、Milestone 和对应 Issue 为准；已接受的技术边界记录在 `docs/adr/`。
@@ -203,6 +203,7 @@ RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke
 - Bug fix 应包含回归测试；难以自动化时记录复现步骤、失败证据和人工验证结果。
 - 外部依赖测试使用固定夹具或受控 fake，不依赖公网波动、真实账号或当前时间。
 - flaky test 视为缺陷，不通过重跑掩盖。
+- 示例观测环境见 `docs/demo.md`，`make demo-smoke` 使用独立随机项目、Secret 与卷验证真实调用链、Prometheus/Loki/Grafana、只读权限和演示数据库故障隔离。无 Docker 入口继续保留。cAdvisor 无 Socket，仅有 raw cgroup 指标，不能声称已验证 Docker 身份、退出/OOM 事件或 Kubernetes。
 - `make smoke` 会创建并删除专用容器、网络和数据库卷；执行前确认没有使用生产配置或共享数据。
 
 ## 10. Review 规范

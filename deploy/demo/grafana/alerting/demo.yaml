@@ -1,0 +1,38 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: demo-health
+    folder: Relythra Demo
+    interval: 10s
+    rules:
+      - uid: demo-target-down
+        title: Demo target unavailable
+        condition: threshold
+        data:
+          - refId: A
+            datasourceUid: demo-prometheus
+            relativeTimeRange: {from: 60, to: 0}
+            model:
+              refId: A
+              expr: 'up{job="demo"}'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: threshold
+            datasourceUid: __expr__
+            model:
+              refId: threshold
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+                  operator: {type: and}
+                  reducer: {type: last}
+                  type: query
+        noDataState: NoData
+        execErrState: Error
+        for: 20s
+        labels: {project: relythra-demo, env: demo, severity: warning}
+        annotations:
+          summary: A demo scrape target is unavailable; inspect target and dependency readiness.
+        isPaused: false

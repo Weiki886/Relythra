@@ -103,6 +103,16 @@ docker compose --file deploy/compose/compose.yaml down
 docker compose --file deploy/compose/compose.yaml down --volumes
 ```
 
+## 示例业务与观测环境
+
+完整演示作为 Compose 叠加环境提供，保留上面的基础启动方式。按 [演示说明](docs/demo.md) 创建独立凭据后运行：
+
+```bash
+./scripts/demo.sh up
+```
+
+访问 orders `http://127.0.0.1:18090/orders` 与 Grafana `http://127.0.0.1:13001/d/relythra-demo`。包含 orders → inventory → 独立业务 PostgreSQL、Prometheus、Loki、Alloy、node_exporter 和 cAdvisor；观测查询使用独立只读 Token。`make demo-smoke` 在专用项目验证真实指标/日志、权限、数据库故障隔离和重启恢复。完整端口、卷、资源限制、cgroup 身份缺口及安全清理见 [docs/demo.md](docs/demo.md)。
+
 ## 数据库迁移
 
 迁移通过独立命令执行，API 启动时不会自动修改 schema：
