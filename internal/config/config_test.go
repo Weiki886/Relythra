@@ -90,6 +90,34 @@ func TestLoadAPIResolvesManagementAndDatasourcePolicy(t *testing.T) {
 	}
 }
 
+func TestLoadAPIResolvesDeploymentWebhookSecretAndSource(t *testing.T) {
+	t.Setenv("RELYTHRA_TEST_DEPLOYMENT_SECRET", "deployment-webhook-canary")
+	cfg, err := config.LoadAPI(environment(map[string]string{
+		"RELYTHRA_DATABASE_URL":                  "postgres://localhost/relythra",
+		"RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF": "env:RELYTHRA_TEST_DEPLOYMENT_SECRET",
+		"RELYTHRA_DEPLOYMENT_WEBHOOK_SOURCE":     "github-actions",
+	}))
+	if err != nil {
+		t.Fatalf("LoadAPI() error = %v", err)
+	}
+	if cfg.DeploymentWebhookSecret.Reveal() != "deployment-webhook-canary" || cfg.DeploymentWebhookSource != "github-actions" {
+		t.Fatalf("deployment webhook configuration was not loaded: source=%q", cfg.DeploymentWebhookSource)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", cfg), "deployment-webhook-canary") {
+		t.Fatal("formatted API config exposed deployment webhook secret")
+	}
+}
+
+func TestLoadAPIRejectsDeploymentWebhookSecretWithoutSource(t *testing.T) {
+	t.Setenv("RELYTHRA_TEST_DEPLOYMENT_SECRET", "deployment-webhook-canary")
+	if _, err := config.LoadAPI(environment(map[string]string{
+		"RELYTHRA_DATABASE_URL":                  "postgres://localhost/relythra",
+		"RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF": "env:RELYTHRA_TEST_DEPLOYMENT_SECRET",
+	})); err == nil {
+		t.Fatal("webhook secret without a source identity was accepted")
+	}
+}
+
 func TestLoadAPIRejectsIncompleteManagementPolicy(t *testing.T) {
 	t.Setenv("RELYTHRA_TEST_ADMIN_TOKEN", "management-token-canary")
 

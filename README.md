@@ -2,7 +2,7 @@
 
 Relythra 是一个面向发布后异常排查的只读诊断系统：关联发布与代码变更、指标、日志和运行状态，组织可追溯的根因假设与处理建议。
 
-当前仓库已完成 Issue #2 的工程骨架、Issue #3 的领域持久化契约、Issue #5 的安全数据边界和 Issue #4 的数据源映射管理：Go API 与 Worker、React 健康状态页、PostgreSQL 领域与不可变审计迁移、只读追溯 API、SecretRef、脱敏、Prompt allowlist、单管理员数据源映射 API、固定查询模板、受限连接测试、Docker Compose 和 CI。真实 Prometheus/LogQL 业务查询、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
+当前仓库已完成 Issue #2 的工程骨架、Issue #3 的领域持久化契约、Issue #5 的安全数据边界、Issue #4 的数据源映射管理、Issue #7 的诊断评测案例契约，以及 Issue #8 的部署事件接入：Go API 与 Worker、React 健康状态页、PostgreSQL 领域与不可变审计迁移、受签名保护的部署回调、人工登记/修正与部署候选查询、只读追溯 API、SecretRef、脱敏、Prompt allowlist、固定查询模板、受限连接测试、Docker Compose 和 CI。真实 Prometheus/LogQL 业务查询、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
 
 ## 工具链
 
@@ -123,7 +123,7 @@ docker compose --file deploy/compose/compose.yaml run --rm migrate up
 docker compose --file deploy/compose/compose.yaml run --rm migrate down
 ```
 
-`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。`000003_security_audit.sql` 创建只允许追加的安全审计表和索引，触发器拒绝 UPDATE/DELETE/TRUNCATE。`000004_datasource_mapping_constraints.sql` 为映射增加乐观锁版本、来源/运行时组合约束和只约束活动记录的部分唯一索引。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
+`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建核心领域表，`000003_security_audit.sql` 创建只允许追加的安全审计表，`000004_datasource_mapping_constraints.sql` 增加映射乐观锁和唯一约束，`000005_diagnosis_case_evaluation_separation.sql` 将评测真值与运行时数据隔离，`000006_deployment_event_ingestion.sql` 增加部署事件版本/来源一致性、不可变变更历史和短期签名重放登记。迁移共同提供 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和历史保护。
 
 `down` 会回滚一个版本，执行前应确认影响。领域迁移的 `down` 会删除领域表和其中的数据，只允许用于隔离的本地或测试环境。API 启动不会自动迁移。
 
@@ -185,6 +185,19 @@ API 不接受原始 PromQL、LogQL、SQL、shell、任意 Header 或任意 HTTP 
 
 所有管理拒绝和操作都写入不可变审计。审计只记录来源类型、模板 ID、错误码、耗时和对象 ID，不记录 Endpoint、SecretRef、Authorization 或响应正文。CRUD 数据库写与最终审计写不在同一事务中；若数据写已提交而审计写失败，API 返回 `internal_error`，部署方需通过请求 ID 和数据库记录核查。
 
+## DeploymentEvent 接入
+
+部署回调使用独立的 `RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF` 和 `RELYTHRA_DEPLOYMENT_WEBHOOK_SOURCE`，签名头为 `X-Relythra-Timestamp` 与 `X-Relythra-Signature`。签名采用 HMAC-SHA256，覆盖 Unix 秒时间戳和原始 JSON body；服务端只接受与当前时间相差不超过 5 分钟的签名。同一签名只接受一次，数据库仅暂存其 SHA-256 摘要至签名过期；部署来源 ID 的事件幂等仍允许 CI 对同一部署使用新时间戳重签重试。
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `POST /api/v1/deployment-events/webhook` | 验证签名与来源后接收 CI/CD 事件；重复签名返回 `409 replayed_signature` |
+| `POST /api/v1/deployment-events` | 使用管理 Bearer Token 人工登记部署事实 |
+| `PATCH /api/v1/deployment-events/{id}` | 使用期望版本和修正理由登记人工修正，并追加变更历史 |
+| `GET /api/v1/deployment-events/candidates` | 在限定时间窗内返回全部匹配部署候选，不会含糊选择“最近一次” |
+
+人工路由使用已配置的单管理员 Token；management actor 是受信任配置标识，不构成多用户身份认证。部署来源回调不会触发部署、回滚或其他运维写操作。Webhook SecretRef 必须由 API 进程通过 `env:NAME` 或 `file:/absolute/path` 读取；不得写入 `.env`、请求体或日志。完整签名、状态转移、审计和回滚边界见 [Issue #8 实施计划](docs/plans/issue-8-deployment-events.md) 与 [ADR 0007](docs/adr/0007-deployment-event-ingestion.md)。
+
 ## 本地检查
 
 安装依赖并运行与 CI 相同的检查：
@@ -242,7 +255,7 @@ RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password \
 - `migrations/`：嵌入式、版本化 PostgreSQL 迁移。
 - `deploy/`：Compose 和镜像构建配置。
 - `test/fixtures/`：后续跨服务测试夹具及其说明。
-- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md)、[ADR 0002](docs/adr/0002-domain-persistence.md)、[ADR 0003](docs/adr/0003-security-data-boundary.md) 和 [ADR 0004](docs/adr/0004-datasource-mapping-boundary.md)。
+- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md)、[ADR 0002](docs/adr/0002-domain-persistence.md)、[ADR 0003](docs/adr/0003-security-data-boundary.md)、[ADR 0004](docs/adr/0004-datasource-mapping-boundary.md) 和 [ADR 0007](docs/adr/0007-deployment-event-ingestion.md)。
 - `docs/security/`：威胁模型、控制与剩余风险，见 [安全威胁模型](docs/security/threat-model.md)。
 - `scripts/smoke.sh`：真实服务端到端冒烟；领域夹具与断言位于 `scripts/smoke_domain.sql`。
 
@@ -252,4 +265,4 @@ RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password \
 
 凭据轮换时先撤销旧值，再替换 Secret 文件或环境变量并重启使用它的进程；仅替换文件但保留旧凭据有效不构成完成处置。安全问题请按 [SECURITY.md](SECURITY.md) 的私密流程报告。
 
-诊断系统保持只读，不自动回滚、重启或扩容。当前已实现单管理员 Token、数据源 allowlist、DNS/IP 锁定、零重定向和固定路径连接测试，但尚未实现多租户 RBAC、Webhook 签名、真实 Prometheus/LogQL 业务查询、Kubernetes 诊断、通知、模型调用和公网访问控制；生产数据库角色隔离、保留期和外部审计留存也需要后续设计。健康检查只反映进程与数据库连通性，不代表业务诊断已经可用。
+诊断系统保持只读，不自动回滚、重启或扩容。当前已实现单管理员 Token、部署 Webhook 签名与重放防护、数据源 allowlist、DNS/IP 锁定、零重定向和固定路径连接测试；尚未实现多租户 RBAC、真实 Prometheus/LogQL 业务查询、Kubernetes 诊断、通知、模型调用和公网访问控制。生产数据库角色隔离、通用数据保留期和外部审计留存仍需后续设计。健康检查只反映进程与数据库连通性，不代表业务诊断已经可用。

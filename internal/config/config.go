@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,12 +23,17 @@ const (
 )
 
 type API struct {
-	Address          string
-	DatabaseURL      secrets.Secret
-	AdminToken       secrets.Secret
-	DataSourcePolicy outbound.PolicyConfig
-	ShutdownTimeout  time.Duration
+	Address                 string
+	DatabaseURL             secrets.Secret
+	AdminToken              secrets.Secret
+	DeploymentWebhookSecret secrets.Secret
+	DeploymentWebhookSource string
+	ManagementActor         string
+	DataSourcePolicy        outbound.PolicyConfig
+	ShutdownTimeout         time.Duration
 }
+
+var deploymentSourcePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 type Worker struct {
 	Address           string
@@ -51,18 +57,45 @@ func LoadAPI(getenv func(string) string) (API, error) {
 	if err != nil {
 		return API{}, err
 	}
+	deploymentWebhookSecret, deploymentWebhookSource, err := loadDeploymentWebhook(getenv)
+	if err != nil {
+		return API{}, err
+	}
 	dataSourcePolicy, err := loadDataSourcePolicy(getenv)
 	if err != nil {
 		return API{}, err
 	}
 
 	return API{
-		Address:          valueOrDefault(getenv("RELYTHRA_API_ADDR"), defaultAPIAddress),
-		DatabaseURL:      databaseURL,
-		AdminToken:       adminToken,
-		DataSourcePolicy: dataSourcePolicy,
-		ShutdownTimeout:  shutdownTimeout,
+		Address:                 valueOrDefault(getenv("RELYTHRA_API_ADDR"), defaultAPIAddress),
+		DatabaseURL:             databaseURL,
+		AdminToken:              adminToken,
+		DeploymentWebhookSecret: deploymentWebhookSecret,
+		DeploymentWebhookSource: deploymentWebhookSource,
+		ManagementActor:         valueOrDefault(strings.TrimSpace(getenv("RELYTHRA_MANAGEMENT_ACTOR")), "management-token"),
+		DataSourcePolicy:        dataSourcePolicy,
+		ShutdownTimeout:         shutdownTimeout,
 	}, nil
+}
+
+func loadDeploymentWebhook(getenv func(string) string) (secrets.Secret, string, error) {
+	rawReference := strings.TrimSpace(getenv("RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF"))
+	source := strings.TrimSpace(getenv("RELYTHRA_DEPLOYMENT_WEBHOOK_SOURCE"))
+	if rawReference == "" && source == "" {
+		return secrets.Secret{}, "", nil
+	}
+	if rawReference == "" || !deploymentSourcePattern.MatchString(source) {
+		return secrets.Secret{}, "", fmt.Errorf("deployment webhook secret reference and valid source are required together")
+	}
+	reference, err := secrets.ParseReference(rawReference)
+	if err != nil {
+		return secrets.Secret{}, "", fmt.Errorf("RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF is invalid")
+	}
+	secret, err := secrets.NewResolver(nil, nil).Resolve(context.Background(), reference)
+	if err != nil || secret.Reveal() == "" {
+		return secrets.Secret{}, "", fmt.Errorf("RELYTHRA_DEPLOYMENT_WEBHOOK_SECRET_REF could not be resolved")
+	}
+	return secret, source, nil
 }
 
 func loadAdminToken(getenv func(string) string) (secrets.Secret, error) {

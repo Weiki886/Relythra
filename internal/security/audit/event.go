@@ -26,12 +26,13 @@ var (
 type Action string
 
 const (
-	ActionConfigChanged    Action = "config.changed"
-	ActionConnectionTested Action = "connection.tested"
-	ActionWebhookReceived  Action = "webhook.received"
-	ActionToolCalled       Action = "tool.called"
-	ActionNotificationSent Action = "notification.sent"
-	ActionReportGenerated  Action = "report.generated"
+	ActionConfigChanged          Action = "config.changed"
+	ActionConnectionTested       Action = "connection.tested"
+	ActionWebhookReceived        Action = "webhook.received"
+	ActionDeploymentEventChanged Action = "deployment.event.changed"
+	ActionToolCalled             Action = "tool.called"
+	ActionNotificationSent       Action = "notification.sent"
+	ActionReportGenerated        Action = "report.generated"
 )
 
 type Result string
@@ -121,6 +122,7 @@ func allowedAction(action Action) bool {
 	case ActionConfigChanged,
 		ActionConnectionTested,
 		ActionWebhookReceived,
+		ActionDeploymentEventChanged,
 		ActionToolCalled,
 		ActionNotificationSent,
 		ActionReportGenerated:

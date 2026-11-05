@@ -65,7 +65,11 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		t.Fatalf("repeat migrations: %v", err)
 	}
 	assertEvaluationColumnsAbsent(t, ctx, db, schema)
+	assertDeploymentIngestionSchema(t, ctx, db, schema)
 
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back deployment event ingestion migration: %v", err)
+	}
 	if err := goose.DownContext(ctx, db, "."); err != nil {
 		t.Fatalf("roll back evaluation separation migration: %v", err)
 	}
@@ -110,6 +114,8 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"notifications",
 		"investigation_transition_audits",
 		"deployment_candidates",
+		"deployment_event_updates",
+		"deployment_webhook_signatures",
 		"hypothesis_evidence",
 		"audit_events",
 	} {
@@ -131,6 +137,7 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"hypotheses_reject_mutation",
 		"reports_reject_mutation",
 		"audit_events_reject_mutation",
+		"deployment_event_updates_reject_mutation",
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
@@ -153,6 +160,9 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	assertDomainConstraints(t, ctx, db, fixture)
 	var count int
 
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back deployment event ingestion migration: %v", err)
+	}
 	if err := goose.DownContext(ctx, db, "."); err != nil {
 		t.Fatalf("roll back evaluation separation migration: %v", err)
 	}
@@ -229,6 +239,32 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 
 	if err := goose.UpContext(ctx, db, "."); err != nil {
 		t.Fatalf("reapply domain migration: %v", err)
+	}
+}
+
+func assertDeploymentIngestionSchema(t *testing.T, ctx context.Context, db *sql.DB, schema string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'deployment_events'
+		  AND column_name IN ('event_version', 'source_consistency', 'source_conflicts')
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check deployment ingestion columns: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("deployment ingestion columns = %d, want 3", count)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'deployment_webhook_signatures'
+		  AND column_name IN ('signature_digest', 'expires_at', 'claimed_at')
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check deployment signature replay columns: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("deployment webhook signature columns = %d, want 3", count)
 	}
 }
 
