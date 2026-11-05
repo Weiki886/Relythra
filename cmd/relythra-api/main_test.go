@@ -1,12 +1,20 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Weiki886/relythra/internal/config"
+	"github.com/Weiki886/relythra/internal/security/audit"
+	"github.com/Weiki886/relythra/internal/security/outbound"
+	"github.com/Weiki886/relythra/internal/security/redact"
+	"github.com/Weiki886/relythra/internal/security/secrets"
 )
 
 func TestNewHandlerMountsHealthAndDomainAPI(t *testing.T) {
@@ -44,4 +52,93 @@ func TestNewHandlerMountsHealthAndDomainAPI(t *testing.T) {
 			t.Fatalf("body = %s", response.Body.String())
 		}
 	})
+}
+
+type mainCapturingAuditRecorder struct {
+	events []audit.Event
+}
+
+func (recorder *mainCapturingAuditRecorder) Record(
+	_ context.Context,
+	event audit.Event,
+) (int64, error) {
+	recorder.events = append(recorder.events, event)
+	return int64(len(recorder.events)), nil
+}
+
+func TestConfiguredHandlerWiresManagementAuditRecorder(t *testing.T) {
+	t.Parallel()
+
+	token, err := secrets.New("management-token-canary")
+	if err != nil {
+		t.Fatalf("new management token: %v", err)
+	}
+	recorder := &mainCapturingAuditRecorder{}
+	handler, err := newConfiguredHandlerWithAuditRecorderFactory(
+		new(sql.DB),
+		config.API{
+			AdminToken: token,
+			DataSourcePolicy: outbound.PolicyConfig{
+				AllowedHosts: []string{"metrics.example.test"},
+				AllowedPorts: []int{443},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func(*sql.DB, *redact.Filter) (audit.Recorder, error) {
+			return recorder, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("new configured handler: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/api/v1/data-source-mappings", nil),
+	)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", response.Code, response.Body.String())
+	}
+	if len(recorder.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(recorder.events))
+	}
+	event := recorder.events[0]
+	if event.Result != audit.ResultDenied ||
+		event.Parameters["error_code"] != "unauthorized" {
+		t.Fatalf("audit event = %#v", event)
+	}
+}
+
+func TestRuntimeKnownSecretsIncludesDatabaseAndManagementCredentials(t *testing.T) {
+	databaseURL, err := secrets.New("postgres://user:database-canary@example.test/relythra")
+	if err != nil {
+		t.Fatalf("new database URL: %v", err)
+	}
+	adminToken, err := secrets.New("management-token-canary")
+	if err != nil {
+		t.Fatalf("new management token: %v", err)
+	}
+
+	known := runtimeKnownSecrets(config.API{
+		DatabaseURL: databaseURL,
+		AdminToken:  adminToken,
+	})
+
+	filter, err := redact.NewFilter(known...)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	safe, err := filter.Text(
+		context.Background(),
+		databaseURL.Reveal()+" "+adminToken.Reveal(),
+	)
+	if err != nil {
+		t.Fatalf("redact runtime secrets: %v", err)
+	}
+	if strings.Contains(safe, databaseURL.Reveal()) ||
+		strings.Contains(safe, adminToken.Reveal()) {
+		t.Fatalf("runtime secret was not redacted: %s", safe)
+	}
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Weiki886/relythra/internal/security/outbound"
 	"github.com/Weiki886/relythra/internal/security/secrets"
 )
 
@@ -20,9 +22,11 @@ const (
 )
 
 type API struct {
-	Address         string
-	DatabaseURL     secrets.Secret
-	ShutdownTimeout time.Duration
+	Address          string
+	DatabaseURL      secrets.Secret
+	AdminToken       secrets.Secret
+	DataSourcePolicy outbound.PolicyConfig
+	ShutdownTimeout  time.Duration
 }
 
 type Worker struct {
@@ -43,12 +47,116 @@ func LoadAPI(getenv func(string) string) (API, error) {
 	if err != nil {
 		return API{}, err
 	}
+	adminToken, err := loadAdminToken(getenv)
+	if err != nil {
+		return API{}, err
+	}
+	dataSourcePolicy, err := loadDataSourcePolicy(getenv)
+	if err != nil {
+		return API{}, err
+	}
 
 	return API{
-		Address:         valueOrDefault(getenv("RELYTHRA_API_ADDR"), defaultAPIAddress),
-		DatabaseURL:     databaseURL,
-		ShutdownTimeout: shutdownTimeout,
+		Address:          valueOrDefault(getenv("RELYTHRA_API_ADDR"), defaultAPIAddress),
+		DatabaseURL:      databaseURL,
+		AdminToken:       adminToken,
+		DataSourcePolicy: dataSourcePolicy,
+		ShutdownTimeout:  shutdownTimeout,
 	}, nil
+}
+
+func loadAdminToken(getenv func(string) string) (secrets.Secret, error) {
+	rawReference := strings.TrimSpace(getenv("RELYTHRA_ADMIN_TOKEN_REF"))
+	if rawReference == "" {
+		return secrets.Secret{}, nil
+	}
+	reference, err := secrets.ParseReference(rawReference)
+	if err != nil {
+		return secrets.Secret{}, fmt.Errorf("RELYTHRA_ADMIN_TOKEN_REF is invalid")
+	}
+	token, err := secrets.NewResolver(nil, nil).Resolve(context.Background(), reference)
+	if err != nil {
+		return secrets.Secret{}, fmt.Errorf("RELYTHRA_ADMIN_TOKEN_REF could not be resolved")
+	}
+	return token, nil
+}
+
+func loadDataSourcePolicy(getenv func(string) string) (outbound.PolicyConfig, error) {
+	rawHosts := strings.TrimSpace(getenv("RELYTHRA_DATASOURCE_ALLOWED_HOSTS"))
+	rawPorts := strings.TrimSpace(getenv("RELYTHRA_DATASOURCE_ALLOWED_PORTS"))
+	rawAllowHTTP := strings.TrimSpace(getenv("RELYTHRA_DATASOURCE_ALLOW_HTTP"))
+	rawAllowPrivate := strings.TrimSpace(getenv("RELYTHRA_DATASOURCE_ALLOW_PRIVATE"))
+	if rawHosts == "" && rawPorts == "" && rawAllowHTTP == "" && rawAllowPrivate == "" {
+		return outbound.PolicyConfig{}, nil
+	}
+	if rawHosts == "" || rawPorts == "" {
+		return outbound.PolicyConfig{}, fmt.Errorf(
+			"RELYTHRA_DATASOURCE_ALLOWED_HOSTS and RELYTHRA_DATASOURCE_ALLOWED_PORTS are required together",
+		)
+	}
+
+	hosts, err := commaSeparatedValues(rawHosts)
+	if err != nil {
+		return outbound.PolicyConfig{}, fmt.Errorf("RELYTHRA_DATASOURCE_ALLOWED_HOSTS is invalid")
+	}
+	portValues, err := commaSeparatedValues(rawPorts)
+	if err != nil {
+		return outbound.PolicyConfig{}, fmt.Errorf("RELYTHRA_DATASOURCE_ALLOWED_PORTS is invalid")
+	}
+	ports := make([]int, 0, len(portValues))
+	for _, rawPort := range portValues {
+		port, parseErr := strconv.Atoi(rawPort)
+		if parseErr != nil || port < 1 || port > 65535 {
+			return outbound.PolicyConfig{}, fmt.Errorf("RELYTHRA_DATASOURCE_ALLOWED_PORTS is invalid")
+		}
+		ports = append(ports, port)
+	}
+	allowHTTP, err := optionalBoolean(rawAllowHTTP, "RELYTHRA_DATASOURCE_ALLOW_HTTP")
+	if err != nil {
+		return outbound.PolicyConfig{}, err
+	}
+	allowPrivate, err := optionalBoolean(rawAllowPrivate, "RELYTHRA_DATASOURCE_ALLOW_PRIVATE")
+	if err != nil {
+		return outbound.PolicyConfig{}, err
+	}
+
+	policy := outbound.PolicyConfig{
+		AllowedHosts: hosts,
+		AllowedPorts: ports,
+		AllowHTTP:    allowHTTP,
+		AllowPrivate: allowPrivate,
+	}
+	if _, err := outbound.NewPolicy(policy); err != nil {
+		return outbound.PolicyConfig{}, fmt.Errorf("data source policy is invalid")
+	}
+	return policy, nil
+}
+
+func commaSeparatedValues(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, errors.New("empty list item")
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return nil, errors.New("empty list")
+	}
+	return values, nil
+}
+
+func optionalBoolean(raw string, key string) (bool, error) {
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", key)
+	}
+	return value, nil
 }
 
 func loadDatabaseURL(getenv func(string) string) (secrets.Secret, error) {

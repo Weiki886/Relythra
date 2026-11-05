@@ -57,6 +57,7 @@ type successEnvelope struct {
 type errorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
 }
 
 type errorEnvelope struct {
@@ -65,10 +66,22 @@ type errorEnvelope struct {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
+	writeErrorDetails(w, r, status, code, message, nil)
+}
+
+func writeErrorDetails(
+	w http.ResponseWriter,
+	r *http.Request,
+	status int,
+	code string,
+	message string,
+	details any,
+) {
 	_ = writeJSON(w, status, errorEnvelope{
 		Error: errorBody{
 			Code:    code,
 			Message: message,
+			Details: details,
 		},
 		RequestID: RequestIDFromContext(r.Context()),
 	})

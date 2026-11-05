@@ -14,9 +14,13 @@ import (
 
 	"github.com/Weiki886/relythra/internal/api"
 	"github.com/Weiki886/relythra/internal/config"
+	connectorhealth "github.com/Weiki886/relythra/internal/connector/health"
 	"github.com/Weiki886/relythra/internal/health"
+	securityaudit "github.com/Weiki886/relythra/internal/security/audit"
 	securitylogging "github.com/Weiki886/relythra/internal/security/logging"
+	"github.com/Weiki886/relythra/internal/security/outbound"
 	"github.com/Weiki886/relythra/internal/security/redact"
+	"github.com/Weiki886/relythra/internal/security/secrets"
 	"github.com/Weiki886/relythra/internal/store"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -39,11 +43,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	filter, err := redact.NewFilter(cfg.DatabaseURL.Reveal())
+	knownSecrets := runtimeKnownSecrets(cfg)
+	filter, err := redact.NewFilter(knownSecrets...)
 	if err != nil {
 		return err
 	}
-	logger, err := securitylogging.NewDefaultLogger(os.Stderr, cfg.DatabaseURL.Reveal())
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr, knownSecrets...)
 	if err != nil {
 		return err
 	}
@@ -55,9 +60,13 @@ func run() error {
 	}
 	defer db.Close()
 
+	handler, err := newConfiguredHandler(db, cfg, logger, filter)
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           newHandler(db, logger, filter),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -84,16 +93,84 @@ func run() error {
 	return server.Shutdown(shutdownContext)
 }
 
+func runtimeKnownSecrets(cfg config.API) []string {
+	secrets := []string{cfg.DatabaseURL.Reveal()}
+	if cfg.AdminToken.Reveal() != "" {
+		secrets = append(secrets, cfg.AdminToken.Reveal())
+	}
+	return secrets
+}
+
 func newHandler(db *sql.DB, logger *slog.Logger, filters ...*redact.Filter) http.Handler {
+	handler, err := newConfiguredHandler(db, config.API{}, logger, filters...)
+	if err != nil {
+		panic("configure API handler: " + err.Error())
+	}
+	return handler
+}
+
+func newConfiguredHandler(
+	db *sql.DB,
+	cfg config.API,
+	logger *slog.Logger,
+	filters ...*redact.Filter,
+) (http.Handler, error) {
+	return newConfiguredHandlerWithAuditRecorderFactory(
+		db,
+		cfg,
+		logger,
+		func(db *sql.DB, filter *redact.Filter) (securityaudit.Recorder, error) {
+			return securityaudit.NewPostgresRecorder(db, filter)
+		},
+		filters...,
+	)
+}
+
+type auditRecorderFactory func(*sql.DB, *redact.Filter) (securityaudit.Recorder, error)
+
+func newConfiguredHandlerWithAuditRecorderFactory(
+	db *sql.DB,
+	cfg config.API,
+	logger *slog.Logger,
+	newAuditRecorder auditRecorderFactory,
+	filters ...*redact.Filter,
+) (http.Handler, error) {
 	filter, err := redact.NewFilter()
 	if err != nil {
-		panic("initialize redaction filter: " + err.Error())
+		return nil, err
 	}
 	if len(filters) > 0 && filters[0] != nil {
 		filter = filters[0]
 	}
+	repository := store.NewPostgres(db)
+	dependencies := api.Dependencies{
+		Reader:             repository,
+		AdminAuthenticator: api.ManagementUnavailableAuthenticator{},
+	}
+	if cfg.AdminToken.Reveal() != "" && len(cfg.DataSourcePolicy.AllowedHosts) > 0 {
+		authenticator, authErr := api.NewBearerTokenAuthenticator(cfg.AdminToken)
+		if authErr != nil {
+			return nil, authErr
+		}
+		policy, policyErr := outbound.NewPolicy(cfg.DataSourcePolicy)
+		if policyErr != nil {
+			return nil, policyErr
+		}
+		tester, testerErr := connectorhealth.NewTester(policy, secrets.NewResolver(nil, nil))
+		if testerErr != nil {
+			return nil, testerErr
+		}
+		recorder, recorderErr := newAuditRecorder(db, filter)
+		if recorderErr != nil {
+			return nil, recorderErr
+		}
+		dependencies.Mappings = repository
+		dependencies.AdminAuthenticator = authenticator
+		dependencies.ConnectionTester = tester
+		dependencies.AuditRecorder = recorder
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/health/", health.NewHandler(db, logger))
-	mux.Handle("/api/v1/", api.NewHandler(store.NewPostgres(db), logger, filter))
-	return mux
+	mux.Handle("/api/v1/", api.NewHandlerWithDependencies(dependencies, logger, filter))
+	return mux, nil
 }

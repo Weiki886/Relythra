@@ -56,6 +56,86 @@ func TestLoadAPIRejectsInvalidShutdownTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadAPIResolvesManagementAndDatasourcePolicy(t *testing.T) {
+	t.Setenv("RELYTHRA_TEST_ADMIN_TOKEN", "management-token-canary")
+
+	cfg, err := config.LoadAPI(environment(map[string]string{
+		"RELYTHRA_DATABASE_URL":             "postgres://localhost/relythra",
+		"RELYTHRA_ADMIN_TOKEN_REF":          "env:RELYTHRA_TEST_ADMIN_TOKEN",
+		"RELYTHRA_DATASOURCE_ALLOWED_HOSTS": "metrics.example.test,logs.example.test",
+		"RELYTHRA_DATASOURCE_ALLOWED_PORTS": "443,8443",
+		"RELYTHRA_DATASOURCE_ALLOW_HTTP":    "true",
+		"RELYTHRA_DATASOURCE_ALLOW_PRIVATE": "false",
+	}))
+	if err != nil {
+		t.Fatalf("LoadAPI() error = %v", err)
+	}
+	if cfg.AdminToken.Reveal() != "management-token-canary" {
+		t.Fatal("management token was not resolved")
+	}
+	if strings.Join(cfg.DataSourcePolicy.AllowedHosts, ",") !=
+		"metrics.example.test,logs.example.test" {
+		t.Fatalf("allowed hosts = %#v", cfg.DataSourcePolicy.AllowedHosts)
+	}
+	if len(cfg.DataSourcePolicy.AllowedPorts) != 2 ||
+		cfg.DataSourcePolicy.AllowedPorts[0] != 443 ||
+		cfg.DataSourcePolicy.AllowedPorts[1] != 8443 {
+		t.Fatalf("allowed ports = %#v", cfg.DataSourcePolicy.AllowedPorts)
+	}
+	if !cfg.DataSourcePolicy.AllowHTTP || cfg.DataSourcePolicy.AllowPrivate {
+		t.Fatalf("policy booleans = %+v", cfg.DataSourcePolicy)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", cfg), "management-token-canary") {
+		t.Fatal("formatted API config exposed the management token")
+	}
+}
+
+func TestLoadAPIRejectsIncompleteManagementPolicy(t *testing.T) {
+	t.Setenv("RELYTHRA_TEST_ADMIN_TOKEN", "management-token-canary")
+
+	tests := []struct {
+		name   string
+		values map[string]string
+	}{
+		{
+			name: "missing hosts",
+			values: map[string]string{
+				"RELYTHRA_DATASOURCE_ALLOWED_PORTS": "443",
+			},
+		},
+		{
+			name: "invalid port",
+			values: map[string]string{
+				"RELYTHRA_DATASOURCE_ALLOWED_HOSTS": "metrics.example.test",
+				"RELYTHRA_DATASOURCE_ALLOWED_PORTS": "443,70000",
+			},
+		},
+		{
+			name: "invalid boolean",
+			values: map[string]string{
+				"RELYTHRA_DATASOURCE_ALLOWED_HOSTS": "metrics.example.test",
+				"RELYTHRA_DATASOURCE_ALLOWED_PORTS": "443",
+				"RELYTHRA_DATASOURCE_ALLOW_HTTP":    "sometimes",
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			values := map[string]string{
+				"RELYTHRA_DATABASE_URL":    "postgres://localhost/relythra",
+				"RELYTHRA_ADMIN_TOKEN_REF": "env:RELYTHRA_TEST_ADMIN_TOKEN",
+			}
+			for key, value := range testCase.values {
+				values[key] = value
+			}
+			if _, err := config.LoadAPI(environment(values)); err == nil {
+				t.Fatal("LoadAPI() error = nil, want invalid policy error")
+			}
+		})
+	}
+}
+
 func TestLoadAPIResolvesDatabaseURLReference(t *testing.T) {
 	t.Setenv("RELYTHRA_TEST_DATABASE_SECRET", "postgres://reader:canary@database/relythra")
 
