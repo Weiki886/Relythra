@@ -1,0 +1,96 @@
+{
+  "case_id": "slow-sql-checkout-v1",
+  "version": 1,
+  "scenario_type": "fault",
+  "service": "checkout-api",
+  "environment": "demo",
+  "baseline_version": "release-100",
+  "fault_version": "release-101",
+  "window": {
+    "start": "2026-11-05T09:30:00Z",
+    "end": "2026-11-05T10:00:00Z"
+  },
+  "repetitions": 10,
+  "randomize_order": true,
+  "expected_root_cause": {
+    "category": "database.query-plan-regression",
+    "summary": "A changed lookup path increases query latency under the seeded workload."
+  },
+  "allowed_variants": [
+    "query-plan-regression",
+    "missing-index-on-filtered-column"
+  ],
+  "required_evidence": [
+    {
+      "source": "PROMETHEUS",
+      "predicate": "The orders request P95 rises after the fault deployment.",
+      "time_relation": "after_fault_start"
+    },
+    {
+      "source": "LOKI",
+      "predicate": "The inventory query duration rises for the same request window.",
+      "time_relation": "overlaps_latency_increase"
+    },
+    {
+      "source": "GITHUB",
+      "predicate": "The fault release changes the inventory lookup query path.",
+      "time_relation": "deployed_before_fault_start"
+    }
+  ],
+  "counterexamples": [
+    "The latency increase begins before the fault release.",
+    "The database query duration remains within the healthy baseline."
+  ],
+  "forbidden_conclusions": [
+    "Claiming a host or container failure without supporting runtime evidence.",
+    "Treating a deployment event alone as proof of root cause."
+  ],
+  "healthy_baseline": {
+    "orders_p95_ms_max": 120,
+    "inventory_query_ms_max": 80,
+    "seeded_rows": 1000
+  },
+  "injection": {
+    "steps": [
+      "Deploy the fault version with the bounded slow lookup enabled.",
+      "Run the fixed seeded request workload for the configured observation window."
+    ],
+    "state_marker": "test-only:slow-sql",
+    "cleanup": [
+      "Keep generated data inside the disposable evaluation database."
+    ]
+  },
+  "recovery": {
+    "steps": [
+      "Restore the baseline lookup implementation.",
+      "Verify request and query latency return to the healthy baseline."
+    ],
+    "cleanup": [
+      "Stop the evaluation workload and remove its disposable database volume."
+    ]
+  },
+  "expected_telemetry": [
+    "orders request duration increases",
+    "inventory query duration increases",
+    "business database remains reachable"
+  ],
+  "expected_changes": [
+    "The fault deployment contains the lookup query change.",
+    "The deployment event precedes the alert window."
+  ],
+  "cleanup_requirements": [
+    "Restore both services to the baseline release.",
+    "Delete only the disposable evaluation project and its volumes."
+  ],
+  "scoring": {
+    "version": "1.0.0",
+    "metrics": [
+      "top1",
+      "top3",
+      "false_high_confidence",
+      "evidence_completeness",
+      "inconclusive_accuracy",
+      "duration_ms"
+    ]
+  }
+}

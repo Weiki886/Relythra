@@ -14,6 +14,22 @@ jobs:
     name: Backend
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: relythra_test
+          POSTGRES_PASSWORD: ci-only-not-secret
+          POSTGRES_DB: relythra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relythra_test -d relythra_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RELYTHRA_TEST_DATABASE_URL: postgres://relythra_test:ci-only-not-secret@127.0.0.1:5432/relythra_test?sslmode=disable
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -23,7 +39,7 @@ jobs:
           go-version: '1.26.x'
           cache-dependency-path: go.sum
       - name: Format, vet, test, and build
-        run: make fmt-check vet test build
+        run: make fmt-check vet test build case-check
 
   frontend:
     name: Frontend

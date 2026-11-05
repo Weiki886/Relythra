@@ -64,6 +64,34 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	if err := goose.UpContext(ctx, db, "."); err != nil {
 		t.Fatalf("repeat migrations: %v", err)
 	}
+	assertEvaluationColumnsAbsent(t, ctx, db, schema)
+
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back evaluation separation migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO diagnosis_cases (case_key, case_version, fault_type, title, expected_root_cause)
+		VALUES ('preserve-before-migration', 1, 'slow-sql', 'Legacy answer', '{"category":"slow-sql"}'::jsonb)
+	`); err != nil {
+		t.Fatalf("insert legacy evaluation row: %v", err)
+	}
+	if err := goose.UpContext(ctx, db, "."); err == nil || !strings.Contains(err.Error(), "contains rows") {
+		t.Fatalf("migration with legacy case data = %v, want an export-required error", err)
+	}
+	var preserved string
+	if err := db.QueryRowContext(ctx, `SELECT expected_root_cause->>'category' FROM diagnosis_cases WHERE case_key = 'preserve-before-migration'`).Scan(&preserved); err != nil {
+		t.Fatalf("verify legacy evaluation data is preserved: %v", err)
+	}
+	if preserved != "slow-sql" {
+		t.Fatalf("legacy expected answer = %q, want preserved value", preserved)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM diagnosis_cases WHERE case_key = 'preserve-before-migration'`); err != nil {
+		t.Fatalf("remove migration guard fixture: %v", err)
+	}
+	if err := goose.UpContext(ctx, db, "."); err != nil {
+		t.Fatalf("apply evaluation separation after clearing fixture: %v", err)
+	}
+	assertEvaluationColumnsAbsent(t, ctx, db, schema)
 
 	for _, table := range []string{
 		"projects",
@@ -123,11 +151,25 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 
 	fixture := insertDomainFixture(t, ctx, db)
 	assertDomainConstraints(t, ctx, db, fixture)
+	var count int
 
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back evaluation separation migration: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'diagnosis_cases'
+		  AND column_name = 'expected_root_cause'
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check evaluation separation rollback: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("expected_root_cause was not restored by evaluation separation rollback")
+	}
 	if err := goose.DownContext(ctx, db, "."); err != nil {
 		t.Fatalf("roll back datasource mapping constraints migration: %v", err)
 	}
-	var count int
+	count = 0
 	if err := db.QueryRowContext(ctx, `
 		SELECT count(*)
 		FROM information_schema.columns
@@ -187,6 +229,31 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 
 	if err := goose.UpContext(ctx, db, "."); err != nil {
 		t.Fatalf("reapply domain migration: %v", err)
+	}
+}
+
+func assertEvaluationColumnsAbsent(t *testing.T, ctx context.Context, db *sql.DB, schema string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM information_schema.columns
+		WHERE table_schema = $1
+		  AND table_name = 'diagnosis_cases'
+		  AND column_name = ANY($2)
+	`, schema, []string{
+		"injection_method",
+		"expected_root_cause",
+		"allowed_variants",
+		"required_evidence",
+		"counterexample_conditions",
+		"healthy_baseline",
+		"scenario_metadata",
+	}).Scan(&count); err != nil {
+		t.Fatalf("check evaluation-only diagnosis case columns: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("runtime diagnosis_cases retained %d evaluation-only columns", count)
 	}
 }
 
