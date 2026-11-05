@@ -18,12 +18,30 @@ type Reader interface {
 }
 
 type handler struct {
-	reader Reader
-	logger *slog.Logger
-	filter *redact.Filter
+	reader             Reader
+	mappings           MappingRepository
+	adminAuthenticator AdminAuthenticator
+	connectionTester   ConnectionTester
+	logger             *slog.Logger
+	filter             *redact.Filter
 }
 
 func NewHandler(reader Reader, logger *slog.Logger, filters ...*redact.Filter) http.Handler {
+	return NewHandlerWithDependencies(
+		Dependencies{
+			Reader:             reader,
+			AdminAuthenticator: ManagementUnavailableAuthenticator{},
+		},
+		logger,
+		filters...,
+	)
+}
+
+func NewHandlerWithDependencies(
+	dependencies Dependencies,
+	logger *slog.Logger,
+	filters ...*redact.Filter,
+) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -31,11 +49,24 @@ func NewHandler(reader Reader, logger *slog.Logger, filters ...*redact.Filter) h
 	if len(filters) > 0 && filters[0] != nil {
 		filter = filters[0]
 	}
-	apiHandler := &handler{reader: reader, logger: logger, filter: filter}
+	if dependencies.AdminAuthenticator == nil {
+		dependencies.AdminAuthenticator = ManagementUnavailableAuthenticator{}
+	}
+	apiHandler := &handler{
+		reader:             dependencies.Reader,
+		mappings:           dependencies.Mappings,
+		adminAuthenticator: dependencies.AdminAuthenticator,
+		connectionTester:   dependencies.ConnectionTester,
+		logger:             logger,
+		filter:             filter,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/{id}", apiHandler.getReport)
 	mux.HandleFunc("/api/v1/evidence/{id}", apiHandler.getEvidence)
 	mux.HandleFunc("/api/v1/deployments/{id}", apiHandler.getDeployment)
+	mux.HandleFunc("/api/v1/data-source-mappings", apiHandler.manageMappingCollection)
+	mux.HandleFunc("/api/v1/data-source-mappings/{id}", apiHandler.manageMappingItem)
+	mux.HandleFunc("/api/v1/data-source-mappings/{id}/{action}", apiHandler.manageMappingAction)
 	mux.HandleFunc("/api/v1/", apiHandler.notFound)
 	return WithRequestID(mux, filter)
 }

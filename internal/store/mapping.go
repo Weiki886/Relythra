@@ -165,6 +165,20 @@ func (repository *Postgres) ListDataSourceMappings(
 	serviceID string,
 	environment string,
 ) ([]DataSourceMapping, error) {
+	return repository.ListDataSourceMappingsPage(ctx, projectID, serviceID, environment, 100, 0)
+}
+
+func (repository *Postgres) ListDataSourceMappingsPage(
+	ctx context.Context,
+	projectID string,
+	serviceID string,
+	environment string,
+	limit int,
+	offset int,
+) ([]DataSourceMapping, error) {
+	if limit < 1 || limit > 100 || offset < 0 {
+		return nil, fmt.Errorf("%w: mapping page bounds are invalid", ErrInvalidInput)
+	}
 	query := `
 		SELECT ` + mappingColumns + `
 		FROM data_source_mappings
@@ -192,7 +206,12 @@ func (repository *Postgres) ListDataSourceMappings(
 		arguments = append(arguments, environment)
 		query += fmt.Sprintf(" AND environment = $%d", len(arguments))
 	}
-	query += " ORDER BY updated_at DESC, id DESC LIMIT 100"
+	arguments = append(arguments, limit, offset)
+	query += fmt.Sprintf(
+		" ORDER BY updated_at DESC, id DESC LIMIT $%d OFFSET $%d",
+		len(arguments)-1,
+		len(arguments),
+	)
 
 	rows, err := repository.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
