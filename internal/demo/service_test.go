@@ -46,6 +46,9 @@ func TestOrdersCallsInventoryAndRecordsTelemetry(t *testing.T) {
 		t.Fatalf("%d: %s", w.Code, w.Body)
 	}
 	metrics := request(orders, "/metrics").Body.String()
+	if !strings.Contains(metrics, `demo_service_info{project="relythra-demo",service="orders",env="demo",host="demo-host",container="test-container",release="baseline",runtime_type="docker-compose"} 1`) {
+		t.Fatalf("missing explicit instance/release identity: %s", metrics)
+	}
 	for _, want := range []string{`demo_http_requests_total{service="orders",route="/orders",status="200"} 1`, `demo_http_request_duration_seconds_bucket`, `demo_http_request_duration_seconds_count{service="orders",route="/orders"} 1`} {
 		if !strings.Contains(metrics, want) {
 			t.Fatalf("missing %s: %s", want, metrics)

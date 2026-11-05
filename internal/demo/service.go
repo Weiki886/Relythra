@@ -35,6 +35,7 @@ var bounds = [...]float64{.005, .01, .025, .05, .1, .5, 1}
 type telemetry struct {
 	mu       sync.Mutex
 	service  string
+	identity Config
 	requests map[string]uint64
 	routes   map[string]*observation
 }
@@ -64,7 +65,7 @@ func NewHandler(cfg Config, store StockStore, client *http.Client, logger *slog.
 		return nil, errors.New("logger required")
 	}
 	logger = logger.With("project", cfg.Project, "service", cfg.Service, "env", cfg.Environment, "release", cfg.Release, "host", cfg.Host, "container", cfg.Container, "runtime_type", "docker-compose")
-	metrics := &telemetry{service: cfg.Service, requests: map[string]uint64{}, routes: map[string]*observation{}}
+	metrics := &telemetry{service: cfg.Service, identity: cfg, requests: map[string]uint64{}, routes: map[string]*observation{}}
 	mux := http.NewServeMux()
 	fetch := func(ctx context.Context, path string) (int, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.InventoryURL+path, nil)
@@ -175,6 +176,8 @@ func (m *telemetry) serve(w http.ResponseWriter, _ *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintln(w, "# HELP demo_service_info Explicit demo instance identity.\n# TYPE demo_service_info gauge")
+	_, _ = fmt.Fprintf(w, "demo_service_info{project=%q,service=%q,env=%q,host=%q,container=%q,release=%q,runtime_type=\"docker-compose\"} 1\n", m.identity.Project, m.identity.Service, m.identity.Environment, m.identity.Host, m.identity.Container, m.identity.Release)
 	_, _ = fmt.Fprintln(w, "# HELP demo_http_requests_total Completed business requests.\n# TYPE demo_http_requests_total counter")
 	for key, count := range m.requests {
 		parts := strings.Split(key, "\x00")
