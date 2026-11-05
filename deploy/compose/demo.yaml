@@ -211,11 +211,10 @@ services:
     build:
       <<: *observe-build
       args: {IMAGE: 'prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0'}
-    command: [--path.procfs=/host/proc, --path.sysfs=/host/sys, --path.rootfs=/host/root, --collector.disable-defaults, --collector.cpu, --collector.meminfo, --collector.filesystem, --collector.loadavg, --collector.time]
+    command: [--path.procfs=/host/proc, --path.sysfs=/host/sys, --collector.disable-defaults, --collector.cpu, --collector.meminfo, --collector.loadavg, --collector.time]
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      - /:/host/root:ro
     networks: [telemetry]
     healthcheck:
       <<: *health
@@ -229,7 +228,6 @@ services:
     cgroup: host
     command: [--docker_only=false, --store_container_labels=false, --raw_cgroup_prefix_whitelist=/, --housekeeping_interval=10s, --disable_metrics=disk,diskIO,network,tcp,udp,percpu,sched,process,referenced_memory,hugetlb,resctrl]
     volumes:
-      - /:/rootfs:ro
       - /sys:/sys:ro
     networks: [telemetry]
     healthcheck:

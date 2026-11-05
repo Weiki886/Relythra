@@ -46,7 +46,7 @@ jobs:
   compose-smoke:
     name: Compose smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     needs:
       - backend
       - frontend
@@ -57,3 +57,5 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate Compose, migrate, and probe services
         run: make smoke
+      - name: Verify demo workload, telemetry, and isolation
+        run: make demo-smoke

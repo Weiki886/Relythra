@@ -9,7 +9,7 @@
 
 标准库 HTTP、slog 与现有 pgx 足够，不增加 Go 依赖。共享的示例处理器提供有限路由、超时、固定标签、直方图和 JSON 日志。示例日志写 stdout 与有界轮转文件，Alloy 只读采集专用卷，不需要 Docker Socket。故障测试入口默认关闭，仅在显式启用时允许固定的有界延迟，不开放任意 SQL/命令。
 
-Prometheus/Loki 存储只在后端网络，诊断侧使用 Nginx 固定 GET 路径 + 独立 Bearer Token 网关。Grafana 预配置只读数据源、Viewer、面板与告警；部署发送密钥/通知地址只提供独立占位，不实现未来的回调/通知。node_exporter 只读挂载 Linux proc/sys/root，cAdvisor 使用原始 cgroup，不提权、不挂 socket；无法从 Docker 元数据获取的名称/镜像标签明确为未知，不能据此做容器关联。Docker Desktop 指标代表 Linux VM。
+Prometheus/Loki 存储只在后端网络，诊断侧使用 Nginx 固定 GET 路径 + 独立 Bearer Token 网关。Grafana 预配置只读数据源、Viewer、面板与告警；部署发送密钥/通知地址只提供独立占位，不实现未来的回调/通知。node_exporter 只读挂载 Linux proc/sys，cAdvisor 使用原始 cgroup，不提权、不挂 socket；无法从 Docker 元数据获取的名称/镜像标签明确为未知，不能据此做容器关联。Docker Desktop 指标代表 Linux VM。
 
 ## 全局约束
 
@@ -69,3 +69,13 @@ docker compose -f deploy/compose/compose.yaml -f deploy/compose/demo.yaml up --b
 ## 执行台账
 
 - 计划自检：Issue 的调用链、权限、采集、面板/告警、资源、健康与恢复均有对应 Task。部署/通知配置仅占位，不冒充已实现能力。
+- Task 1 complete：`go test ./internal/demo` 首次因缺少 Config/NewHandler/RotatingLog 失败；实现后 `go test -race ./internal/demo` 通过。
+- Task 1 补充边界：缺失库存字段 `{}` 曾被当作零库存，回归测试先得到 200 而失败；现用指针字段+有界完整 JSON 校验，返回 503，race 测试通过。
+- Task 2 in progress：探针测试先因缺少 probe 失败，实现后通过；完整栈首次构建进行中。
+- Ruling：增加 Alloy scrape target，使缺失日志标签的 drop counter 可在 Prometheus 中查询；验收 target 总数由 5 改为 6。仍不增加 Docker 元数据权限。
+- 快速验证：`make fmt-check vet test build`、`make web-check`、现有 `make smoke` 已通过；完整观测栈尚未完成验收。
+- Task 2 首次真实运行发现：64 位十六进制 Bearer 超过 Nginx 默认 map hash bucket；设置 bucket 128，保持完整 Token 比较。
+- Ruling：PostgreSQL 初始化脚本在 Docker Desktop bind 模式下执行失败，且 UID postgres 不能依赖读取 root-only Secret。改为专用派生镜像 COPY 可执行初始化脚本；root bootstrap 将 reader Secret 复制为 postgres 私有文件，再走官方初始化。只改变专用业务数据库，无共享数据删除。
+- Task 2 第二次运行：所有容器 healthy，宿主机却无法访问 orders；Docker 不转发仅连接 internal 网络容器的发布端口。新增只供 orders 的 demo-ingress 网络，业务数据库仍只在 business 内网；静态验收新增“发布端口必须具备非 internal 网络”检查。不能以容器 healthy 代替真实宿主机请求验收。
+- Task 2/3 complete（权限复核前）：完整 smoke 两次通过，包含实例身份与日志一致、UID 10001/472、6 targets、Grafana 告警/Viewer、数据库中断、schema 缺失和重启恢复。
+- Ruling（安全复核）：只读宿主机根目录可能间接暴露 Unix Socket，不满足无控制入口的意图。新增配置回归检查先在 cadvisor 失败；移除 node_exporter/cAdvisor 的 `/` 挂载，node 仅保留 CPU/meminfo/loadavg/time，磁盘容量明确未知。重新验收剩余 CPU/内存/cgroup 数据，不能以缺失代替健康。
