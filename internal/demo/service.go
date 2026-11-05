@@ -83,12 +83,13 @@ func NewHandler(cfg Config, store StockStore, client *http.Client, logger *slog.
 			return 0, nil
 		}
 		var body struct {
-			Available int `json:"available"`
+			Available *int `json:"available"`
 		}
-		if err := json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&body); err != nil || body.Available < 0 {
+		data, readErr := io.ReadAll(io.LimitReader(res.Body, 4097))
+		if readErr != nil || len(data) > 4096 || json.Unmarshal(data, &body) != nil || body.Available == nil || *body.Available < 0 {
 			return 0, errors.New("inventory response invalid")
 		}
-		return body.Available, nil
+		return *body.Available, nil
 	}
 	respond := func(w http.ResponseWriter, status int, body any) {
 		w.Header().Set("Content-Type", "application/json")

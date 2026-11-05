@@ -114,3 +114,21 @@ func TestInvalidConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestOrdersRejectsMissingOrOversizedInventoryData(t *testing.T) {
+	for _, body := range []string{`{}`, `{"available":-1}`, strings.Repeat(" ", 4096) + `{"available":42}`, `{"available":42}` + strings.Repeat(" ", 4096)} {
+		t.Run(body[:min(len(body), 30)], func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer upstream.Close()
+			cfg := demoConfig("orders")
+			cfg.InventoryURL = upstream.URL
+			handler, err := NewHandler(cfg, nil, upstream.Client(), slog.Default())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := request(handler, "/orders"); w.Code != 503 {
+				t.Fatalf("missing/invalid data treated as valid stock: %d %s", w.Code, w.Body)
+			}
+		})
+	}
+}
