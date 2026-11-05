@@ -278,6 +278,7 @@ func (handler *handler) createMapping(w http.ResponseWriter, r *http.Request) {
 		handler.writeMappingStoreError(w, r, err, issues)
 		return
 	}
+	auditStateFromRequest(r).ObjectID = mapping.ID
 	handler.writeData(w, r, http.StatusCreated, newMappingView(mapping))
 }
 
@@ -791,6 +792,7 @@ func (handler *handler) writeConnectionTestError(
 type managementAuditState struct {
 	SourceType string
 	TemplateID string
+	ObjectID   string
 	Result     audit.Result
 	ErrorCode  string
 	SkipFinal  bool
@@ -971,11 +973,15 @@ func (handler *handler) newManagementAuditEvent(
 	if errorCode != "" {
 		parameters["error_code"] = errorCode
 	}
+	objectID := state.ObjectID
+	if objectID == "" {
+		objectID = managementObjectID(r)
+	}
 	return audit.Event{
 		Actor:      "management-token",
 		Action:     action,
 		ObjectType: "data_source_mapping",
-		ObjectID:   managementObjectID(r),
+		ObjectID:   objectID,
 		Result:     result,
 		RequestID:  RequestIDFromContext(r.Context()),
 		Parameters: parameters,

@@ -121,11 +121,12 @@ func TestDatasourceManagementOperationsAreAudited(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		body       string
-		wantAction audit.Action
+		name         string
+		method       string
+		path         string
+		body         string
+		wantAction   audit.Action
+		wantObjectID string
 	}{
 		{
 			name:       "list",
@@ -146,7 +147,8 @@ func TestDatasourceManagementOperationsAreAudited(t *testing.T) {
 				"template_ids":["prometheus.service.latency.v1"],
 				"secret_ref":"env:MAPPING_SECRET_CANARY"
 			}`,
-			wantAction: audit.ActionConfigChanged,
+			wantAction:   audit.ActionConfigChanged,
+			wantObjectID: mappingID,
 		},
 		{
 			name:       "read",
@@ -211,6 +213,7 @@ func TestDatasourceManagementOperationsAreAudited(t *testing.T) {
 				event.Result != audit.ResultSucceeded ||
 				event.ObjectType != "data_source_mapping" ||
 				event.ObjectID == "" ||
+				(testCase.wantObjectID != "" && event.ObjectID != testCase.wantObjectID) ||
 				event.RequestID == "" ||
 				event.OccurredAt.IsZero() {
 				t.Fatalf("audit event = %#v", event)
