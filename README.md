@@ -2,7 +2,7 @@
 
 Relythra 是一个面向发布后异常排查的只读诊断系统：关联发布与代码变更、指标、日志和运行状态，组织可追溯的根因假设与处理建议。
 
-当前仓库已完成 Issue #2 的工程骨架、Issue #3 的领域持久化契约和 Issue #5 的安全数据边界：Go API 与 Worker、React 健康状态页、PostgreSQL 领域与不可变审计迁移、只读追溯 API、SecretRef、脱敏、Prompt allowlist、Docker Compose 和 CI。业务连接器、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
+当前仓库已完成 Issue #2 的工程骨架、Issue #3 的领域持久化契约、Issue #5 的安全数据边界和 Issue #4 的数据源映射管理：Go API 与 Worker、React 健康状态页、PostgreSQL 领域与不可变审计迁移、只读追溯 API、SecretRef、脱敏、Prompt allowlist、单管理员数据源映射 API、固定查询模板、受限连接测试、Docker Compose 和 CI。真实 Prometheus/LogQL 业务查询、Agent、完整工作台与通知能力尚未实现；本项目不是生产部署方案。
 
 ## 工具链
 
@@ -45,6 +45,22 @@ RELYTHRA_DATABASE_URL_REF='file:/run/secrets/relythra-database-url' \
 ./scripts/dev.sh --check
 ```
 
+管理 API 默认关闭。需要在本地启用时，同时提供管理 Token 和数据源 allowlist，例如：
+
+```bash
+mkdir -p secrets
+chmod 700 secrets
+printf '%s' 'local-only-management-token' > secrets/management_token
+chmod 600 secrets/management_token
+
+RELYTHRA_ADMIN_TOKEN_REF="file:${PWD}/secrets/management_token" \
+RELYTHRA_DATASOURCE_ALLOWED_HOSTS=metrics.example.com \
+RELYTHRA_DATASOURCE_ALLOWED_PORTS=443 \
+  ./scripts/dev.sh
+```
+
+示例 allowlist 只用于本地配置和固定模板查询计划。实际连接测试会解析主机，并且在没有显式开启 `RELYTHRA_DATASOURCE_ALLOW_HTTP` 或 `RELYTHRA_DATASOURCE_ALLOW_PRIVATE` 时拒绝 HTTP 或私有地址。
+
 ## 使用 Compose 启动
 
 要求 Docker daemon 已启动。先创建一个不进入 Git 的本地密码文件，再复制非敏感路径配置：
@@ -57,16 +73,22 @@ printf '%s' "$DB_PASSWORD" > secrets/postgres_password
 unset DB_PASSWORD
 chmod 600 secrets/postgres_password
 
+read -rsp 'Management API token: ' ADMIN_TOKEN
+printf '%s' "$ADMIN_TOKEN" > secrets/management_token
+unset ADMIN_TOKEN
+chmod 600 secrets/management_token
+
 cp .env.example .env
 docker compose --file deploy/compose/compose.yaml up --build
 ```
 
-`.env.example` 只保存 `secrets/postgres_password` 的相对路径；Compose 将它挂载为 PostgreSQL、迁移命令和 API 使用的只读 Secret。Compose 会等待 PostgreSQL 健康、执行迁移，再启动 API、Worker 和 Web。首次启动需要拉取镜像并安装依赖，耗时会随网络变化。
+`.env.example` 只保存 PostgreSQL 密码文件、管理 Token 文件和演示数据源策略，不包含凭据值。Compose 把两个 Secret 只读挂载给需要的进程；API 入口再以 UID 10001 可读的权限复制到运行时目录。Compose 会等待 PostgreSQL 健康、执行迁移，再启动 API、Worker 和 Web。首次启动需要拉取镜像并安装依赖，耗时会随网络变化。
 
 - Web：<http://localhost:3000>
 - API liveness：<http://localhost:8080/health/live>
 - API readiness：<http://localhost:8080/health/ready>
 - API 只读领域端点：`/api/v1/reports/{id}`、`/api/v1/evidence/{id}`、`/api/v1/deployments/{id}`
+- API 数据源映射：<http://localhost:8080/api/v1/data-source-mappings>
 - Worker metrics：<http://localhost:8081/metrics>
 
 所有演示端口只绑定回环地址，数据库映射到本机 `15432` 端口。停止服务：
@@ -91,11 +113,67 @@ docker compose --file deploy/compose/compose.yaml run --rm migrate up
 docker compose --file deploy/compose/compose.yaml run --rm migrate down
 ```
 
-`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。`000003_security_audit.sql` 创建只允许追加的安全审计表和索引，触发器拒绝 UPDATE/DELETE/TRUNCATE。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
+`000001_baseline.sql` 建立迁移基线，`000002_domain_model.sql` 创建 Project、Service、Release、DeploymentEvent、Alert、Incident、Investigation、ToolCall、Evidence、Hypothesis、DiagnosisCase、Report、Notification 及关联审计表。`000003_security_audit.sql` 创建只允许追加的安全审计表和索引，触发器拒绝 UPDATE/DELETE/TRUNCATE。`000004_datasource_mapping_constraints.sql` 为映射增加乐观锁版本、来源/运行时组合约束和只约束活动记录的部分唯一索引。迁移包含 UUID 主键、UTC 时间、幂等唯一约束、外键、索引、状态机和不可变历史保护。
 
 `down` 会回滚一个版本，执行前应确认影响。领域迁移的 `down` 会删除领域表和其中的数据，只允许用于隔离的本地或测试环境。API 启动不会自动迁移。
 
 三个领域端点只读，并返回统一请求 ID 和错误包络。数据库为空或资源不存在时返回 `404`，路径 ID 非法时在查询数据库前返回 `400`。当前没有创建这些资源的公开写接口。
+
+## 数据源映射管理 API
+
+管理 API 使用单个 Bearer Token，必须在启动时同时配置：
+
+- `RELYTHRA_ADMIN_TOKEN_REF`：只接受 `env:NAME` 或 `file:/absolute/path`。
+- `RELYTHRA_DATASOURCE_ALLOWED_HOSTS`：逗号分隔的精确主机 allowlist。
+- `RELYTHRA_DATASOURCE_ALLOWED_PORTS`：逗号分隔的端口 allowlist。
+- `RELYTHRA_DATASOURCE_ALLOW_HTTP`：显式允许明文 HTTP，默认 `false`。
+- `RELYTHRA_DATASOURCE_ALLOW_PRIVATE`：显式允许私有 DNS 地址，默认 `false`。
+
+Token 或 allowlist 缺失时管理路由返回 `503 management_unavailable`。该 Token 是可信内网的单管理员能力，不是 RBAC、SSO 或多租户授权；演示端口只绑定回环地址，不能据此公网部署。
+
+管理端点：
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| `GET /api/v1/data-source-mappings` | 游标分页列出活动映射，可按 Project、Service 和 Environment 过滤 |
+| `POST /api/v1/data-source-mappings` | 创建映射；不完整 Compose 标签或模板可作为草稿保存 |
+| `GET /api/v1/data-source-mappings/{id}` | 读取映射，只返回 Secret 配置状态 |
+| `PUT /api/v1/data-source-mappings/{id}` | 使用 `expected_version` 乐观更新 |
+| `DELETE /api/v1/data-source-mappings/{id}?expected_version=N` | 软删除映射 |
+| `POST /api/v1/data-source-mappings/{id}/validate` | 返回结构化配置问题 |
+| `POST /api/v1/data-source-mappings/{id}/queries` | 解析固定模板并返回有界查询计划 |
+| `POST /api/v1/data-source-mappings/{id}/connection-test` | 执行固定路径、只读连接测试 |
+
+创建 Prometheus 映射示例：
+
+```bash
+curl --fail \
+  --header "Authorization: Bearer $(cat secrets/management_token)" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "project_id": "10000000-0000-4000-8000-000000000001",
+    "service_id": "10000000-0000-4000-8000-000000000002",
+    "environment": "prod",
+    "source_type": "PROMETHEUS",
+    "public_settings": {"endpoint": "https://metrics.example.com"},
+    "template_ids": ["prometheus.service.latency.v1"],
+    "secret_ref": "env:PROMETHEUS_READ_TOKEN"
+  }' \
+  http://127.0.0.1:8080/api/v1/data-source-mappings
+```
+
+API 不接受原始 PromQL、LogQL、SQL、shell、任意 Header 或任意 HTTP method。连接测试使用固定路径：GitHub `/repos/{owner}/{repo}`、Grafana `/api/health`、Prometheus `/api/v1/status/buildinfo`、Loki `/loki/api/v1/status/buildinfo` 和 Compose 运行时 `/-/ready`。Kubernetes 映射可以保存，但 v1 校验和连接测试返回 `unsupported_runtime`。
+
+主要错误语义：
+
+- `401 unauthorized`：Bearer Token 缺失或错误。
+- `503 management_unavailable`：管理 Token 或 allowlist 未配置，或连接测试依赖不可用。
+- `422 validation_failed` / `invalid_request`：字段、模板、时间窗、标签或请求体无效。
+- `409 stale_version`：映射已被其他请求更新或删除。
+- `422 policy_rejected`：协议、主机、端口、DNS/IP 或重定向策略拒绝。
+- `504 connection_timeout`、`502 network_error` / `tls_error` / `remote_unavailable` / `invalid_response`：连接测试失败类别。
+
+所有管理拒绝和操作都写入不可变审计。审计只记录来源类型、模板 ID、错误码、耗时和对象 ID，不记录 Endpoint、SecretRef、Authorization 或响应正文。CRUD 数据库写与最终审计写不在同一事务中；若数据写已提交而审计写失败，API 返回 `internal_error`，部署方需通过请求 ID 和数据库记录核查。
 
 ## 本地检查
 
@@ -123,18 +201,19 @@ RELYTHRA_TEST_DATABASE_URL='postgres://user@127.0.0.1:5432/relythra?sslmode=disa
 
 ## 完整冒烟
 
-冒烟使用独立 Compose 项目与端口 `18080`、`18081`、`13000`、`15432`，会构建镜像、从空卷迁移、重复执行迁移，并检查领域表、索引、幂等约束、非法状态回滚、报告关联、只读 API、Worker 和 Web：
+冒烟使用独立 Compose 项目与端口 `18080`、`18081`、`13000`、`15432`，会构建镜像、从空卷迁移、重复执行迁移，并检查领域表、索引、幂等约束、非法状态回滚、数据源映射版本与软删除、SecretRef、管理认证、固定模板计划、审计脱敏、报告关联、只读 API、Worker 和 Web：
 
 ```bash
 RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password ./scripts/smoke.sh
 ```
 
-脚本退出时自动删除其容器和数据库卷。CI 兼容入口 `RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret ./scripts/smoke.sh` 会创建临时只读密码文件并在退出时删除。若已有服务占用上述端口，可通过 `RELYTHRA_API_PORT`、`RELYTHRA_WORKER_PORT`、`RELYTHRA_WEB_PORT` 和 `RELYTHRA_POSTGRES_PORT` 覆盖。
+脚本退出时自动删除其容器和数据库卷。CI 兼容入口 `RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret ./scripts/smoke.sh` 会创建临时只读密码文件和管理 Token 文件，并在退出时删除。若已有服务占用上述端口，可通过 `RELYTHRA_API_PORT`、`RELYTHRA_WORKER_PORT`、`RELYTHRA_WEB_PORT` 和 `RELYTHRA_POSTGRES_PORT` 覆盖。
 
 仅校验 Compose 渲染结果时运行：
 
 ```bash
 RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password \
+  RELYTHRA_MANAGEMENT_TOKEN_FILE=/absolute/path/to/local-management-token \
   docker compose --file deploy/compose/compose.yaml config --quiet
 ```
 
@@ -153,14 +232,14 @@ RELYTHRA_POSTGRES_PASSWORD_FILE=/absolute/path/to/local-password \
 - `migrations/`：嵌入式、版本化 PostgreSQL 迁移。
 - `deploy/`：Compose 和镜像构建配置。
 - `test/fixtures/`：后续跨服务测试夹具及其说明。
-- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md)、[ADR 0002](docs/adr/0002-domain-persistence.md) 和 [ADR 0003](docs/adr/0003-security-data-boundary.md)。
+- `docs/adr/`：架构决策，见 [ADR 0001](docs/adr/0001-repository-baseline.md)、[ADR 0002](docs/adr/0002-domain-persistence.md)、[ADR 0003](docs/adr/0003-security-data-boundary.md) 和 [ADR 0004](docs/adr/0004-datasource-mapping-boundary.md)。
 - `docs/security/`：威胁模型、控制与剩余风险，见 [安全威胁模型](docs/security/threat-model.md)。
 - `scripts/smoke.sh`：真实服务端到端冒烟；领域夹具与断言位于 `scripts/smoke_domain.sql`。
 
 ## 配置与数据边界
 
-`.env.example` 只包含本地端口和未跟踪密码文件路径，`.env`、`secrets/` 被 Git 忽略。数据库和后续连接器通过 SecretRef 或 Secret 文件注入；不得提交真实密码、Token、私钥或含凭据的连接串。日志、API、审计和模型 Prompt 使用统一脱敏，无法安全处理时拒绝外发。
+`.env.example` 只包含本地端口、未跟踪 Secret 文件路径和演示 allowlist，`.env`、`secrets/` 被 Git 忽略。数据库、管理 API 和后续连接器通过 SecretRef 或 Secret 文件注入；不得提交真实密码、Token、私钥或含凭据的连接串。日志、API、审计和模型 Prompt 使用统一脱敏，无法安全处理时拒绝外发。
 
 凭据轮换时先撤销旧值，再替换 Secret 文件或环境变量并重启使用它的进程；仅替换文件但保留旧凭据有效不构成完成处置。安全问题请按 [SECURITY.md](SECURITY.md) 的私密流程报告。
 
-诊断系统在后续实现中保持只读，不自动回滚、重启或扩容。当前健康检查只反映进程与数据库连通性，不代表业务诊断已经可用。尚未实现身份认证、多租户授权、Webhook 签名、SSRF 动态防护、真实连接器、通知、模型调用和公网访问控制；生产数据库角色隔离、保留期和外部审计留存也需要后续设计。
+诊断系统保持只读，不自动回滚、重启或扩容。当前已实现单管理员 Token、数据源 allowlist、DNS/IP 锁定、零重定向和固定路径连接测试，但尚未实现多租户 RBAC、Webhook 签名、真实 Prometheus/LogQL 业务查询、Kubernetes 诊断、通知、模型调用和公网访问控制；生产数据库角色隔离、保留期和外部审计留存也需要后续设计。健康检查只反映进程与数据库连通性，不代表业务诊断已经可用。

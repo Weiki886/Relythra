@@ -51,7 +51,7 @@ Issue #4 要求“仅管理员配置”，但 Proposal 明确 v1 不做 RBAC、S
 - 产出 `func ResolveTemplates(SourceType, []string) ([]Template, []ValidationIssue)`。
 - 产出 `func ValidateQuery(Template, QueryParameters) (NormalizedQuery, []ValidationIssue)`。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestValidateRuntimeLabelsReportsEachMissingComposeLabel(t *testing.T) {
@@ -89,10 +89,10 @@ func TestValidateQueryRejectsUnknownQueryText(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `go test ./internal/datasource -run 'Test(ValidateRuntimeLabels|ResolveTemplates|ValidateQuery)'`，确认因包、类型和函数不存在而失败。**
-- [ ] **步骤 3：实现最小领域模型、稳定 issue 顺序、固定模板表和仅允许 `service/start/end/limit/cursor/max_series` 的参数校验。**
-- [ ] **步骤 4：重跑目标测试，确认 Compose 五标签、跨源模板、未知参数和数值边界全部通过。**
-- [ ] **步骤 5：提交 `feat(datasource): define mapping and template contracts`。**
+- [x] **步骤 2：运行 `go test ./internal/datasource -run 'Test(ValidateRuntimeLabels|ResolveTemplates|ValidateQuery)'`，确认因包、类型和函数不存在而失败。**
+- [x] **步骤 3：实现最小领域模型、稳定 issue 顺序、固定模板表和仅允许 `service/start/end/limit/cursor/max_series` 的参数校验。**
+- [x] **步骤 4：重跑目标测试，确认 Compose 五标签、跨源模板、未知参数和数值边界全部通过。**
+- [x] **步骤 5：提交 `feat(datasource): define mapping and template contracts`。**
 
 ### Task 2: 版本化 PostgreSQL 映射仓储与迁移
 
@@ -112,7 +112,7 @@ func TestValidateQueryRejectsUnknownQueryText(t *testing.T) {
 - 产出 `Postgres.DeleteDataSourceMapping(context.Context, id string, expectedVersion int) error`。
 - `DataSourceMapping` 的 JSON 不包含 SecretRef；响应 DTO 另行选择字段。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestCreateDataSourceMappingAllowsDraftWithMissingRuntimeLabels(t *testing.T) {
@@ -155,10 +155,10 @@ func TestUpdateDataSourceMappingRejectsStaleVersion(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `RELYTHRA_TEST_DATABASE_URL=<隔离测试库> go test ./internal/store -run 'Test(Create|Update|Delete)DataSourceMapping'`，确认因仓储方法和 `version` schema 缺失而失败。**
-- [ ] **步骤 3：新增前向迁移，加入 `version integer NOT NULL DEFAULT 1`、部分唯一索引和来源/运行时组合约束；实现创建、读取、列表、乐观更新与软删除。**
-- [ ] **步骤 4：在空库执行 `up`、重复 `up` 和隔离 schema 测试，确认草稿保存、版本冲突、软删除后可重建、跨 Project/Service 拒绝和 SecretRef 持久化通过。**
-- [ ] **步骤 5：提交 `feat(store): persist versioned datasource mappings`。**
+- [x] **步骤 2：运行 `RELYTHRA_TEST_DATABASE_URL=<隔离测试库> go test ./internal/store -run 'Test(Create|Update|Delete)DataSourceMapping'`，确认因仓储方法和 `version` schema 缺失而失败。**
+- [x] **步骤 3：新增前向迁移，加入 `version integer NOT NULL DEFAULT 1`、部分唯一索引和来源/运行时组合约束；实现创建、读取、列表、乐观更新与软删除。**
+- [x] **步骤 4：在空库执行 `up`、重复 `up` 和隔离 schema 测试，确认草稿保存、版本冲突、软删除后可重建、跨 Project/Service 拒绝和 SecretRef 持久化通过。**
+- [x] **步骤 5：提交 `feat(store): persist versioned datasource mappings`。**
 
 ### Task 3: 地址白名单、DNS 重绑定防护与固定路径 HTTP client
 
@@ -176,7 +176,7 @@ func TestUpdateDataSourceMappingRejectsStaleVersion(t *testing.T) {
 - 产出 `func NewHTTPClient(*Policy, time.Duration) (*http.Client, error)`；client 使用自定义 `DialContext` 锁定 `Validate` 返回的 IP，并在 `CheckRedirect` 中拒绝所有重定向。
 - 产出稳定错误 `ErrHostNotAllowed`、`ErrPortNotAllowed`、`ErrSchemeNotAllowed`、`ErrUnsafeAddress`、`ErrRedirectBlocked`、`ErrResolutionFailed`。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestPolicyRejectsLoopbackEvenWhenPrivateAccessIsEnabled(t *testing.T) {
@@ -217,10 +217,10 @@ func TestClientDoesNotFollowRedirect(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `go test ./internal/security/outbound -run 'Test(Policy|Client)'`，确认因策略与安全 client 不存在而失败。**
-- [ ] **步骤 3：实现 URL、主机、端口、IP 分类、全量 DNS 检查和固定 IP dialer；测试使用注入 resolver 与受控 TLS server，不访问公网。**
-- [ ] **步骤 4：重跑目标测试，确认回环、链路本地、云元数据、混合 DNS、未授权主机/端口/协议和重定向均失败关闭。**
-- [ ] **步骤 5：提交 `feat(security): guard outbound datasource connections`。**
+- [x] **步骤 2：运行 `go test ./internal/security/outbound -run 'Test(Policy|Client)'`，确认因策略与安全 client 不存在而失败。**
+- [x] **步骤 3：实现 URL、主机、端口、IP 分类、全量 DNS 检查和固定 IP dialer；测试使用注入 resolver 与受控 TLS server，不访问公网。**
+- [x] **步骤 4：重跑目标测试，确认回环、链路本地、云元数据、混合 DNS、未授权主机/端口/协议和重定向均失败关闭。**
+- [x] **步骤 5：提交 `feat(security): guard outbound datasource connections`。**
 
 ### Task 4: 只读连接测试器
 
@@ -238,7 +238,7 @@ func TestClientDoesNotFollowRedirect(t *testing.T) {
 - 固定检查路径：GitHub `/repos/{owner}/{repo}`、Grafana `/api/health`、Prometheus `/api/v1/status/buildinfo`、Loki `/loki/api/v1/status/buildinfo`、Runtime `/-/ready`。
 - 401/403 返回 `DENIED`；连接成功但响应不可解析返回 `UNKNOWN` 权限和静态能力；超时、DNS、SSRF 和 TLS 使用稳定类别。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestTesterReturnsVersionAndPermissionWithoutSecret(t *testing.T) {
@@ -268,12 +268,14 @@ func TestTesterReportsKubernetesUnsupported(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `go test ./internal/connector/health -run TestTester`，确认因连接测试器不存在而失败。**
-- [ ] **步骤 3：实现来源专用固定请求、最小只读 Header、Secret 注入、64 KiB 响应上限、5 秒默认超时和结构化结果。**
-- [ ] **步骤 4：重跑目标测试，覆盖成功、401/403、超时、错误 JSON、超大响应、Kubernetes 未支持和 Secret 不泄漏。**
-- [ ] **步骤 5：提交 `feat(connector): add bounded readonly connection tests`。**
+- [x] **步骤 2：运行 `go test ./internal/connector/health -run TestTester`，确认因连接测试器不存在而失败。**
+- [x] **步骤 3：实现来源专用固定请求、最小只读 Header、Secret 注入、64 KiB 响应上限、5 秒默认超时和结构化结果。**
+- [x] **步骤 4：重跑目标测试，覆盖成功、401/403、超时、错误 JSON、超大响应、Kubernetes 未支持和 Secret 不泄漏。**
+- [x] **步骤 5：提交 `feat(connector): add bounded readonly connection tests`。**
 
 **Ruling**：计划中的 `datasource.DataSourceMapping` 实际只存在于持久化包 `store`，连接器直接依赖仓储类型会倒置层次。实现改为由连接器定义只含来源、运行时、公开设置和 Secret 引用的 `health.Target`；API 负责把仓储记录转换为该类型。错误代价是调用方需要显式转换字段。
+
+**Ruling**：管理 Token 与数据库连接串都是运行时已知 Secret。API 进程在创建日志和审计脱敏 Filter 时同时注册两者；数据库连接串不再作为唯一的已知 Secret。该选择覆盖 Bearer Token 在内部错误或调试输出中出现的路径，代价是配置变更后必须重启 API 才能更新脱敏集合。
 
 ### Task 5: 管理 Token、CRUD、校验与查询计划 API
 
@@ -305,7 +307,7 @@ func TestTesterReportsKubernetesUnsupported(t *testing.T) {
 - 请求体限制 1 MiB、拒绝未知字段和多个 JSON 文档；错误码覆盖 `unauthorized`、`management_unavailable`、`validation_failed`、`unsupported_runtime`、`stale_version`、`rate_limited`。
 - 配置新增可选 `RELYTHRA_ADMIN_TOKEN_REF`、`RELYTHRA_DATASOURCE_ALLOWED_HOSTS`、`RELYTHRA_DATASOURCE_ALLOWED_PORTS`、`RELYTHRA_DATASOURCE_ALLOW_HTTP`、`RELYTHRA_DATASOURCE_ALLOW_PRIVATE`。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestManagementEndpointRequiresBearerToken(t *testing.T) {
@@ -329,10 +331,10 @@ func TestQueryEndpointRejectsRawPromQL(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `go test ./internal/api ./internal/config -run 'Test(Management|Query|LoadAPI)'`，确认因路由、认证、DTO 与配置字段不存在而失败。**
-- [ ] **步骤 3：实现 Token 常量时间校验、严格 JSON、有界分页、字段选择 DTO、CRUD、标签校验、固定查询计划和稳定状态码。**
-- [ ] **步骤 4：重跑目标测试，确认 Token 缺失/错误、未知字段、无效 UUID、过期版本、任意查询文本、SecretRef 回显和依赖错误脱敏。**
-- [ ] **步骤 5：提交 `feat(api): manage datasource mappings securely`。**
+- [x] **步骤 2：运行 `go test ./internal/api ./internal/config -run 'Test(Management|Query|LoadAPI)'`，确认因路由、认证、DTO 与配置字段不存在而失败。**
+- [x] **步骤 3：实现 Token 常量时间校验、严格 JSON、有界分页、字段选择 DTO、CRUD、标签校验、固定查询计划和稳定状态码。**
+- [x] **步骤 4：重跑目标测试，确认 Token 缺失/错误、未知字段、无效 UUID、过期版本、任意查询文本、SecretRef 回显和依赖错误脱敏。**
+- [x] **步骤 5：提交 `feat(api): manage datasource mappings securely`。**
 
 ### Task 6: 连接测试 API、拒绝审计与可观察性
 
@@ -349,7 +351,7 @@ func TestQueryEndpointRejectsRawPromQL(t *testing.T) {
 - 审计参数只含 mapping ID、source type、result、error code、模板 ID 和耗时；不写 endpoint query、Authorization、SecretRef locator 或响应正文。
 - 审计写入失败时 API 返回 `internal_error`，外部连接测试不继续执行。
 
-- [ ] **步骤 1：写失败测试**
+- [x] **步骤 1：写失败测试**
 
 ```go
 func TestRejectedConnectionWritesAuditWithoutSecret(t *testing.T) {
@@ -374,10 +376,10 @@ func TestRejectedConnectionWritesAuditWithoutSecret(t *testing.T) {
 }
 ```
 
-- [ ] **步骤 2：运行 `go test ./internal/api -run 'Test.*Audit|TestRejectedConnection'`，确认因审计接线不存在而失败。**
-- [ ] **步骤 3：在认证后、外部请求前记录必要审计；连接结束后记录最终结果；所有参数通过现有 Redaction Filter。**
-- [ ] **步骤 4：重跑 API 与 audit 测试，确认成功、失败、拒绝、脱敏、请求 ID 和审计失败关闭语义。**
-- [ ] **步骤 5：提交 `feat(audit): trace datasource management operations`。**
+- [x] **步骤 2：运行 `go test ./internal/api -run 'Test.*Audit|TestRejectedConnection'`，确认因审计接线不存在而失败。**
+- [x] **步骤 3：在认证后、外部请求前记录必要审计；连接结束后记录最终结果；所有参数通过现有 Redaction Filter。**
+- [x] **步骤 4：重跑 API 与 audit 测试，确认成功、失败、拒绝、脱敏、请求 ID 和审计失败关闭语义。**
+- [x] **步骤 5：提交 `feat(audit): trace datasource management operations`。**
 
 ### Task 7: ADR、威胁模型、README、示例配置与冒烟验证
 
@@ -389,6 +391,10 @@ func TestRejectedConnectionWritesAuditWithoutSecret(t *testing.T) {
 - 修改：`.env.example`
 - 修改：`scripts/smoke_domain.sql`
 - 修改：`scripts/smoke.sh`
+- 新增：`scripts/smoke_management.sql`
+- 修改：`cmd/relythra-api/main.go`
+- 修改：`deploy/compose/compose.yaml`
+- 修改：`deploy/docker/entrypoint.sh`
 
 **接口**
 
@@ -396,11 +402,28 @@ func TestRejectedConnectionWritesAuditWithoutSecret(t *testing.T) {
 - README 记录全部环境变量、API 示例、连接测试固定路径、错误语义和尚未实现的真实诊断连接器。
 - 冒烟验证 `000004` 空库迁移、重复迁移、版本冲突、草稿保存、部分唯一索引和审计追加。
 
-- [ ] **步骤 1：修改 SQL 冒烟夹具，加入 `version`、部分唯一索引、SecretRef 与草稿标签断言；先执行并确认当前 schema 在版本列处失败。**
-- [ ] **步骤 2：新增 ADR 与威胁模型条目，明确共享 Token 不是 RBAC、管理 API 不得公网暴露。**
-- [ ] **步骤 3：更新 README 和 `.env.example`，只使用占位 SecretRef、示例主机和示例端口。**
-- [ ] **步骤 4：运行 `make fmt-check vet test build`、`make web-check`、`RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke` 和 gitleaks。**
-- [ ] **步骤 5：提交 `docs(datasource): document secure mapping boundary`。**
+- [x] **步骤 1：修改 SQL 冒烟夹具，加入 `version`、部分唯一索引、SecretRef 与草稿标签断言；先执行并确认当前 schema 在版本列处失败。**
+- [x] **步骤 2：新增 ADR 与威胁模型条目，明确共享 Token 不是 RBAC、管理 API 不得公网暴露。**
+- [x] **步骤 3：更新 README 和 `.env.example`，只使用占位 SecretRef、示例主机和示例端口。**
+- [x] **步骤 4：运行 `make fmt-check vet test build`、`make web-check`、`RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke` 和 gitleaks。**
+- [x] **步骤 5：提交 `docs(datasource): document secure mapping boundary`。**
+
+## 执行证据
+
+- 真实 PostgreSQL：`RELYTHRA_TEST_DATABASE_URL='postgres://yang@127.0.0.1:5432/relythra?sslmode=disable' go test ./migrations ./internal/store ./internal/security/audit -count=1` 通过，覆盖空库迁移、重复迁移、仓储约束、SecretRef 持久化和审计不可变。
+- Go 门禁：`make fmt-check vet test build` 通过。
+- 前端门禁：`make web-check` 通过。
+- 脚本静态检查：`bash -n scripts/smoke.sh deploy/docker/entrypoint.sh scripts/dev.sh` 与 `git diff --check` 通过。
+- Compose 端到端：`RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke` 通过，覆盖空卷迁移、重复迁移、管理认证、映射 CRUD、固定模板计划、过期版本、运行时草稿、审计断言、服务健康与数据库故障降级。
+- 审计回归：创建映射的 `object_id` 在测试中先复现为 `collection`，修复为真实映射 ID 后，`go test ./internal/api -run TestDatasourceManagementOperationsAreAudited -count=1` 通过。
+- Secret 扫描：提交前执行 gitleaks，只接受无泄漏或对固定测试 canary 有明确误报说明的结果。
+
+## 当前未覆盖与限制
+
+- v1 只有单管理员共享 Token，没有 RBAC、SSO、审批流或逐用户身份。
+- 查询 API 当前生成并审计有界查询计划，不执行真实 Prometheus/LogQL 业务查询；连接测试只访问来源专用固定路径。
+- Kubernetes 映射只保留契约和校验结果，连接测试明确返回未支持；没有 Docker Socket、SSH 或 Kubernetes 写权限。
+- CRUD 写与最终审计写不在同一数据库事务内。审计写入失败时 API 返回 `internal_error`，但已提交的配置写入不会自动回滚；生产使用前需评估补偿或 transactional outbox。
 
 ## 验收映射
 

@@ -9,7 +9,7 @@ Relythra 面向发布后异常排查，关联发布、代码变更、指标、�
 - 系统以只读诊断为主。不得自动执行回滚、重启、扩容、配置修改或其他外部写操作。
 - Agent 输出是根因假设，不是未经证据支持的绝对结论。无法证明时必须显式返回证据不足或 `inconclusive`。
 - 证据必须能回到原始来源核验；区分事实、推断、反证和未知项。
-- 当前仓库处于 `M1 契约与夹具` 阶段，已有 Go/React/PostgreSQL/Compose 骨架，但连接器、Agent、完整工作台和通知能力尚未实现。文档和 PR 不得把规划能力写成已交付能力。
+- 当前仓库处于 `M1 契约与夹具` 阶段，已有 Go/React/PostgreSQL/Compose 骨架、数据源映射管理、固定查询计划和固定路径连接测试；真实 Prometheus/LogQL 业务查询、Agent、完整工作台和通知能力尚未实现。文档和 PR 不得把规划能力写成已交付能力。
 - 仓库是公开仓库。Issue、PR、Commit、测试夹具、日志、截图和 AI Prompt 都按公开数据处理。
 
 产品范围和阶段目标以 Issue #1 的 Proposal、Milestone 和对应 Issue 为准；已接受的技术边界记录在 `docs/adr/`。
@@ -60,9 +60,10 @@ Relythra 面向发布后异常排查，关联发布、代码变更、指标、�
 
 ## 5. 外部数据与只读安全
 
-后续连接 GitHub、Grafana、Prometheus、Loki、容器和机器状态时，必须遵守以下规则：
+连接 GitHub、Grafana、Prometheus、Loki、容器和机器状态时，必须遵守以下规则：
 
 - 所有连接器默认只读，使用最小权限凭据；禁止通过连接器触发回滚、部署、重启、扩容或配置写入。
+- 当前只实现固定路径、固定响应上限的连接测试；真实业务查询必须复用同一出站策略、模板注册表和 Evidence 边界，未实现前不得由 API 接受任意查询文本。
 - 外部请求必须有超时、重试上限、结果大小/分页上限和明确的失败降级，不进行无界查询。
 - 数据源地址必须经过配置与白名单校验，防止 SSRF；不得允许用户直接提交任意 URL 或任意 PromQL/LogQL 执行入口。
 - Webhook 必须校验来源、大小、格式和重复投递；错误信息保持稳定且不泄露内部实现。
@@ -193,6 +194,7 @@ RELYTHRA_POSTGRES_PASSWORD=ci-only-not-secret make smoke
 - 快速层：`gofmt`、`go vet`、Go 单元测试、ESLint、TypeScript、Vitest 和生产构建。
 - 集成层：PostgreSQL 连接、迁移、健康检查、连接器解析与失败降级。
 - 端到端层：`make smoke` 使用独立 Compose 项目、端口和数据卷，验证迁移、服务健康、数据库故障语义及 Web/API 连通性；不得指向生产或共享环境。
+- 数据源管理层：单元测试覆盖管理 Token、CRUD、固定模板、SecretRef 脱敏、审计和出站策略；`make smoke` 额外验证管理 API 的未认证拒绝、映射创建与查询计划、版本冲突、审计对象 ID 和运行时草稿。
 - 安全层：凭据泄漏、SSRF、Webhook、只读权限、Prompt 数据隔离和深链授权按高风险变更专项验证。
 
 补充规则：

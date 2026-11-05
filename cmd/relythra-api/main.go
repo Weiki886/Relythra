@@ -43,11 +43,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	filter, err := redact.NewFilter(cfg.DatabaseURL.Reveal())
+	knownSecrets := runtimeKnownSecrets(cfg)
+	filter, err := redact.NewFilter(knownSecrets...)
 	if err != nil {
 		return err
 	}
-	logger, err := securitylogging.NewDefaultLogger(os.Stderr, cfg.DatabaseURL.Reveal())
+	logger, err := securitylogging.NewDefaultLogger(os.Stderr, knownSecrets...)
 	if err != nil {
 		return err
 	}
@@ -90,6 +91,14 @@ func run() error {
 	shutdownContext, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	return server.Shutdown(shutdownContext)
+}
+
+func runtimeKnownSecrets(cfg config.API) []string {
+	secrets := []string{cfg.DatabaseURL.Reveal()}
+	if cfg.AdminToken.Reveal() != "" {
+		secrets = append(secrets, cfg.AdminToken.Reveal())
+	}
+	return secrets
 }
 
 func newHandler(db *sql.DB, logger *slog.Logger, filters ...*redact.Filter) http.Handler {

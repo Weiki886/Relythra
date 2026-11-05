@@ -52,8 +52,14 @@ services:
     environment:
       <<: *database-environment
       RELYTHRA_API_ADDR: :8080
+      RELYTHRA_ADMIN_TOKEN_REF: file:/run/secrets/management_token
+      RELYTHRA_DATASOURCE_ALLOWED_HOSTS: ${RELYTHRA_DATASOURCE_ALLOWED_HOSTS:-prometheus}
+      RELYTHRA_DATASOURCE_ALLOWED_PORTS: ${RELYTHRA_DATASOURCE_ALLOWED_PORTS:-9090}
+      RELYTHRA_DATASOURCE_ALLOW_HTTP: ${RELYTHRA_DATASOURCE_ALLOW_HTTP:-true}
+      RELYTHRA_DATASOURCE_ALLOW_PRIVATE: ${RELYTHRA_DATASOURCE_ALLOW_PRIVATE:-true}
     secrets:
       - postgres_password
+      - management_token
     ports:
       - "127.0.0.1:${RELYTHRA_API_PORT:-8080}:8080"
     depends_on:
@@ -100,3 +106,5 @@ volumes:
 secrets:
   postgres_password:
     file: ${RELYTHRA_POSTGRES_PASSWORD_FILE:?Set RELYTHRA_POSTGRES_PASSWORD_FILE}
+  management_token:
+    file: ${RELYTHRA_MANAGEMENT_TOKEN_FILE:?Set RELYTHRA_MANAGEMENT_TOKEN_FILE}

@@ -110,3 +110,35 @@ func TestConfiguredHandlerWiresManagementAuditRecorder(t *testing.T) {
 		t.Fatalf("audit event = %#v", event)
 	}
 }
+
+func TestRuntimeKnownSecretsIncludesDatabaseAndManagementCredentials(t *testing.T) {
+	databaseURL, err := secrets.New("postgres://user:database-canary@example.test/relythra")
+	if err != nil {
+		t.Fatalf("new database URL: %v", err)
+	}
+	adminToken, err := secrets.New("management-token-canary")
+	if err != nil {
+		t.Fatalf("new management token: %v", err)
+	}
+
+	known := runtimeKnownSecrets(config.API{
+		DatabaseURL: databaseURL,
+		AdminToken:  adminToken,
+	})
+
+	filter, err := redact.NewFilter(known...)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	safe, err := filter.Text(
+		context.Background(),
+		databaseURL.Reveal()+" "+adminToken.Reveal(),
+	)
+	if err != nil {
+		t.Fatalf("redact runtime secrets: %v", err)
+	}
+	if strings.Contains(safe, databaseURL.Reveal()) ||
+		strings.Contains(safe, adminToken.Reveal()) {
+		t.Fatalf("runtime secret was not redacted: %s", safe)
+	}
+}

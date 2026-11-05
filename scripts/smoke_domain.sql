@@ -52,11 +52,12 @@ BEGIN
           'evidence_investigation_observed_idx',
           'reports_generated_idx',
           'audit_events_object_idx',
-          'audit_events_request_idx'
+          'audit_events_request_idx',
+          'data_source_mappings_active_identity_idx'
       );
 
-    IF actual_indexes <> 8 THEN
-        RAISE EXCEPTION 'expected 8 domain and audit indexes, found %', actual_indexes;
+    IF actual_indexes <> 9 THEN
+        RAISE EXCEPTION 'expected 9 domain and audit indexes, found %', actual_indexes;
     END IF;
 END;
 $$;
@@ -75,6 +76,130 @@ VALUES (
     'checkout-api',
     'Checkout API'
 );
+
+INSERT INTO data_source_mappings (
+    id, project_id, service_id, environment, source_type,
+    public_settings, query_templates, secret_ref
+) VALUES (
+    '10000000-0000-4000-8000-000000000012',
+    '10000000-0000-4000-8000-000000000001',
+    '10000000-0000-4000-8000-000000000002',
+    'staging',
+    'LOKI',
+    '{"endpoint":"https://logs.example.test"}'::jsonb,
+    '{"items":[]}'::jsonb,
+    'env:SMOKE_DATASOURCE_TOKEN'
+);
+
+DO $$
+BEGIN
+    IF (
+        SELECT version
+        FROM data_source_mappings
+        WHERE id = '10000000-0000-4000-8000-000000000012'
+    ) <> 1 THEN
+        RAISE EXCEPTION 'data source mapping version did not default to 1';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM data_source_mappings
+        WHERE id = '10000000-0000-4000-8000-000000000012'
+          AND secret_ref = 'env:SMOKE_DATASOURCE_TOKEN'
+          AND public_settings::text NOT LIKE '%SMOKE_DATASOURCE_TOKEN%'
+    ) THEN
+        RAISE EXCEPTION 'data source mapping did not preserve only the SecretRef locator';
+    END IF;
+END;
+$$;
+
+UPDATE data_source_mappings
+SET public_settings = '{"endpoint":"https://logs-v2.example.test"}'::jsonb,
+    version = version + 1,
+    updated_at = now()
+WHERE id = '10000000-0000-4000-8000-000000000012';
+
+DO $$
+BEGIN
+    IF (
+        SELECT version
+        FROM data_source_mappings
+        WHERE id = '10000000-0000-4000-8000-000000000012'
+    ) <> 2 THEN
+        RAISE EXCEPTION 'data source mapping version did not increment';
+    END IF;
+END;
+$$;
+
+UPDATE data_source_mappings
+SET deleted_at = now(), version = version + 1
+WHERE id = '10000000-0000-4000-8000-000000000012';
+
+INSERT INTO data_source_mappings (
+    id, project_id, service_id, environment, source_type,
+    public_settings, query_templates
+) VALUES (
+    '10000000-0000-4000-8000-000000000013',
+    '10000000-0000-4000-8000-000000000001',
+    '10000000-0000-4000-8000-000000000002',
+    'staging',
+    'LOKI',
+    '{"endpoint":"https://logs-recreated.example.test"}'::jsonb,
+    '{"items":[]}'::jsonb
+);
+
+DO $$
+BEGIN
+    IF (
+        SELECT count(*)
+        FROM data_source_mappings
+        WHERE service_id = '10000000-0000-4000-8000-000000000002'
+          AND environment = 'staging'
+          AND source_type = 'LOKI'
+    ) <> 2 THEN
+        RAISE EXCEPTION 'soft-deleted mapping history was not retained';
+    END IF;
+
+    IF (
+        SELECT count(*)
+        FROM data_source_mappings
+        WHERE service_id = '10000000-0000-4000-8000-000000000002'
+          AND environment = 'staging'
+          AND source_type = 'LOKI'
+          AND deleted_at IS NULL
+    ) <> 1 THEN
+        RAISE EXCEPTION 'soft-deleted mapping identity could not be recreated exactly once';
+    END IF;
+END;
+$$;
+
+INSERT INTO data_source_mappings (
+    id, project_id, service_id, environment, source_type, runtime_type,
+    public_settings, query_templates
+) VALUES (
+    '10000000-0000-4000-8000-000000000014',
+    '10000000-0000-4000-8000-000000000001',
+    '10000000-0000-4000-8000-000000000002',
+    'qa',
+    'RUNTIME',
+    'docker-compose',
+    '{"endpoint":"http://cadvisor:8080"}'::jsonb,
+    '{"items":[]}'::jsonb
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM data_source_mappings
+        WHERE id = '10000000-0000-4000-8000-000000000014'
+          AND version = 1
+          AND public_settings->'runtime_labels' IS NULL
+    ) THEN
+        RAISE EXCEPTION 'incomplete runtime mapping draft was not stored';
+    END IF;
+END;
+$$;
 
 INSERT INTO releases (
     id, project_id, service_id, version, commit_sha, image_digest
