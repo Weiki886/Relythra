@@ -16,6 +16,7 @@ import (
 	"github.com/Weiki886/relythra/internal/config"
 	connectorhealth "github.com/Weiki886/relythra/internal/connector/health"
 	"github.com/Weiki886/relythra/internal/health"
+	securityaudit "github.com/Weiki886/relythra/internal/security/audit"
 	securitylogging "github.com/Weiki886/relythra/internal/security/logging"
 	"github.com/Weiki886/relythra/internal/security/outbound"
 	"github.com/Weiki886/relythra/internal/security/redact"
@@ -105,6 +106,26 @@ func newConfiguredHandler(
 	logger *slog.Logger,
 	filters ...*redact.Filter,
 ) (http.Handler, error) {
+	return newConfiguredHandlerWithAuditRecorderFactory(
+		db,
+		cfg,
+		logger,
+		func(db *sql.DB, filter *redact.Filter) (securityaudit.Recorder, error) {
+			return securityaudit.NewPostgresRecorder(db, filter)
+		},
+		filters...,
+	)
+}
+
+type auditRecorderFactory func(*sql.DB, *redact.Filter) (securityaudit.Recorder, error)
+
+func newConfiguredHandlerWithAuditRecorderFactory(
+	db *sql.DB,
+	cfg config.API,
+	logger *slog.Logger,
+	newAuditRecorder auditRecorderFactory,
+	filters ...*redact.Filter,
+) (http.Handler, error) {
 	filter, err := redact.NewFilter()
 	if err != nil {
 		return nil, err
@@ -130,9 +151,14 @@ func newConfiguredHandler(
 		if testerErr != nil {
 			return nil, testerErr
 		}
+		recorder, recorderErr := newAuditRecorder(db, filter)
+		if recorderErr != nil {
+			return nil, recorderErr
+		}
 		dependencies.Mappings = repository
 		dependencies.AdminAuthenticator = authenticator
 		dependencies.ConnectionTester = tester
+		dependencies.AuditRecorder = recorder
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/health/", health.NewHandler(db, logger))

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/Weiki886/relythra/internal/connector/health"
 	"github.com/Weiki886/relythra/internal/datasource"
+	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/audit"
 	"github.com/Weiki886/relythra/internal/security/secrets"
 	"github.com/Weiki886/relythra/internal/store"
 )
@@ -54,6 +57,7 @@ type Dependencies struct {
 	Mappings           MappingRepository
 	AdminAuthenticator AdminAuthenticator
 	ConnectionTester   ConnectionTester
+	AuditRecorder      audit.Recorder
 }
 
 type mappingWriteRequest struct {
@@ -126,54 +130,67 @@ func (handler *handler) manageMappingCollection(w http.ResponseWriter, r *http.R
 	if !handler.authorizeManagement(w, r) {
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		handler.listMappings(w, r)
-	case http.MethodPost:
-		handler.createMapping(w, r)
-	default:
-		writeMethodNotAllowed(w, r, http.MethodGet, http.MethodPost)
-	}
+	handler.withManagementAudit(w, r, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.listMappings(w, r)
+		case http.MethodPost:
+			handler.createMapping(w, r)
+		default:
+			writeMethodNotAllowed(w, r, http.MethodGet, http.MethodPost)
+		}
+	})
 }
 
 func (handler *handler) manageMappingItem(w http.ResponseWriter, r *http.Request) {
 	if !handler.authorizeManagement(w, r) {
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		handler.getMapping(w, r)
-	case http.MethodPut:
-		handler.updateMapping(w, r)
-	case http.MethodDelete:
-		handler.deleteMapping(w, r)
-	default:
-		writeMethodNotAllowed(w, r, http.MethodGet, http.MethodPut, http.MethodDelete)
-	}
+	handler.withManagementAudit(w, r, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.getMapping(w, r)
+		case http.MethodPut:
+			handler.updateMapping(w, r)
+		case http.MethodDelete:
+			handler.deleteMapping(w, r)
+		default:
+			writeMethodNotAllowed(w, r, http.MethodGet, http.MethodPut, http.MethodDelete)
+		}
+	})
 }
 
 func (handler *handler) manageMappingAction(w http.ResponseWriter, r *http.Request) {
 	if !handler.authorizeManagement(w, r) {
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, r, http.MethodPost)
-		return
-	}
-	switch r.PathValue("action") {
-	case "validate":
-		handler.validateMapping(w, r)
-	case "queries":
-		handler.planMappingQuery(w, r)
-	case "connection-test":
-		handler.testMappingConnection(w, r)
-	default:
-		handler.notFound(w, r)
-	}
+	handler.withManagementAudit(w, r, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, r, http.MethodPost)
+			return
+		}
+		switch r.PathValue("action") {
+		case "validate":
+			handler.validateMapping(w, r)
+		case "queries":
+			handler.planMappingQuery(w, r)
+		case "connection-test":
+			handler.testMappingConnection(w, r)
+		default:
+			handler.notFound(w, r)
+		}
+	})
 }
 
 func (handler *handler) authorizeManagement(w http.ResponseWriter, r *http.Request) bool {
+	if handler.auditRecorder == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "management_unavailable", "management API is unavailable")
+		return false
+	}
 	if handler.adminAuthenticator == nil {
+		if !handler.recordDeniedManagementAttempt(w, r, "management_unavailable") {
+			return false
+		}
 		writeError(w, r, http.StatusServiceUnavailable, "management_unavailable", "management API is unavailable")
 		return false
 	}
@@ -182,11 +199,20 @@ func (handler *handler) authorizeManagement(w http.ResponseWriter, r *http.Reque
 	case err == nil:
 		return true
 	case errors.Is(err, ErrUnauthorized):
+		if !handler.recordDeniedManagementAttempt(w, r, "unauthorized") {
+			return false
+		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, r, http.StatusUnauthorized, "unauthorized", "management authorization is required")
 	case errors.Is(err, ErrManagementUnavailable):
+		if !handler.recordDeniedManagementAttempt(w, r, "management_unavailable") {
+			return false
+		}
 		writeError(w, r, http.StatusServiceUnavailable, "management_unavailable", "management API is unavailable")
 	default:
+		if !handler.recordDeniedManagementAttempt(w, r, "management_unavailable") {
+			return false
+		}
 		writeError(w, r, http.StatusServiceUnavailable, "management_unavailable", "management API is unavailable")
 	}
 	return false
@@ -234,6 +260,7 @@ func (handler *handler) createMapping(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrictJSON(w, r, &body, false) {
 		return
 	}
+	auditStateFromRequest(r).SourceType = string(body.SourceType)
 	mapping, issues, err := handler.mappings.CreateDataSourceMapping(
 		r.Context(),
 		store.CreateDataSourceMappingInput{
@@ -280,6 +307,7 @@ func (handler *handler) updateMapping(w http.ResponseWriter, r *http.Request) {
 		handler.writeBodyValidationError(w, r, "expected_version", "expected_version must be positive")
 		return
 	}
+	auditStateFromRequest(r).SourceType = string(body.SourceType)
 	mapping, issues, err := handler.mappings.UpdateDataSourceMapping(
 		r.Context(),
 		store.UpdateDataSourceMappingInput{
@@ -354,6 +382,7 @@ func (handler *handler) planMappingQuery(w http.ResponseWriter, r *http.Request)
 	if !decodeStrictJSON(w, r, &body, false) {
 		return
 	}
+	auditStateFromRequest(r).TemplateID = strings.TrimSpace(body.TemplateID)
 	mapping, err := handler.mappings.GetDataSourceMapping(r.Context(), id)
 	if err != nil {
 		handler.writeMappingStoreError(w, r, err, nil)
@@ -400,8 +429,10 @@ func (handler *handler) testMappingConnection(w http.ResponseWriter, r *http.Req
 		handler.writeMappingStoreError(w, r, err, nil)
 		return
 	}
+	auditStateFromRequest(r).SourceType = string(mapping.SourceType)
 	if mapping.SourceType == datasource.SourceRuntime &&
 		mapping.RuntimeType == datasource.RuntimeKubernetes {
+		handler.setAuditError(r, "unsupported_runtime", audit.ResultDenied)
 		writeError(w, r, http.StatusUnprocessableEntity, "unsupported_runtime", "Kubernetes runtime is not supported in v1")
 		return
 	}
@@ -410,7 +441,11 @@ func (handler *handler) testMappingConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if handler.connectionTester == nil {
+		handler.setAuditError(r, "connection_test_unavailable", audit.ResultFailed)
 		writeError(w, r, http.StatusServiceUnavailable, "connection_test_unavailable", "connection testing is unavailable")
+		return
+	}
+	if !handler.preflightConnectionTestAudit(w, r) {
 		return
 	}
 	var reference *secrets.Reference
@@ -431,6 +466,11 @@ func (handler *handler) testMappingConnection(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		handler.writeConnectionTestError(w, r, err)
 		return
+	}
+	if result.Permission == health.PermissionDenied {
+		state := auditStateFromRequest(r)
+		state.Result = audit.ResultDenied
+		state.ErrorCode = "permission_denied"
 	}
 	handler.writeData(w, r, http.StatusOK, result)
 }
@@ -658,6 +698,7 @@ func (handler *handler) writeBodyValidationError(
 	field string,
 	message string,
 ) {
+	handler.setAuditError(r, "validation_failed", audit.ResultFailed)
 	handler.writeValidationIssues(w, r, []datasource.ValidationIssue{{
 		Field:   field,
 		Code:    "invalid_format",
@@ -670,6 +711,7 @@ func (handler *handler) writeValidationIssues(
 	r *http.Request,
 	issues []datasource.ValidationIssue,
 ) {
+	handler.setAuditError(r, "validation_failed", audit.ResultFailed)
 	writeErrorDetails(
 		w,
 		r,
@@ -690,10 +732,13 @@ func (handler *handler) writeMappingStoreError(
 	case len(issues) > 0 && errors.Is(err, store.ErrInvalidInput):
 		handler.writeValidationIssues(w, r, issues)
 	case errors.Is(err, store.ErrConflict):
+		handler.setAuditError(r, "stale_version", audit.ResultFailed)
 		writeError(w, r, http.StatusConflict, "stale_version", "mapping version is stale")
 	case errors.Is(err, store.ErrInvalidInput):
+		handler.setAuditError(r, "invalid_request", audit.ResultFailed)
 		writeError(w, r, http.StatusUnprocessableEntity, "invalid_request", "mapping request is invalid")
 	default:
+		handler.setAuditError(r, "internal_error", audit.ResultFailed)
 		handler.writeStoreError(w, r, err)
 	}
 }
@@ -705,22 +750,307 @@ func (handler *handler) writeConnectionTestError(
 ) {
 	var testError *health.TestError
 	if !errors.As(err, &testError) {
+		handler.setAuditError(r, "connection_test_failed", audit.ResultFailed)
 		writeError(w, r, http.StatusBadGateway, "connection_test_failed", "connection test failed")
 		return
 	}
 	switch testError.Category {
 	case health.ErrorInvalidMapping:
+		handler.setAuditError(r, "invalid_mapping", audit.ResultFailed)
 		writeError(w, r, http.StatusUnprocessableEntity, "invalid_mapping", "mapping cannot be tested")
 	case health.ErrorSecretUnavailable:
+		handler.setAuditError(r, "secret_unavailable", audit.ResultFailed)
 		writeError(w, r, http.StatusUnprocessableEntity, "secret_unavailable", "mapping secret is unavailable")
 	case health.ErrorPolicyRejected:
+		handler.setAuditError(r, "policy_rejected", audit.ResultDenied)
 		writeError(w, r, http.StatusUnprocessableEntity, "policy_rejected", "outbound target is not allowed")
 	case health.ErrorTimeout:
+		handler.setAuditError(r, "connection_timeout", audit.ResultFailed)
 		writeError(w, r, http.StatusGatewayTimeout, "connection_timeout", "data source connection timed out")
+	case health.ErrorTLS:
+		handler.setAuditError(r, "tls_error", audit.ResultFailed)
+		writeError(w, r, http.StatusBadGateway, "tls_error", "data source TLS verification failed")
+	case health.ErrorNetwork:
+		handler.setAuditError(r, "network_error", audit.ResultFailed)
+		writeError(w, r, http.StatusBadGateway, "network_error", "data source network connection failed")
+	case health.ErrorRemoteUnavailable:
+		handler.setAuditError(r, "remote_unavailable", audit.ResultFailed)
+		writeError(w, r, http.StatusBadGateway, "remote_unavailable", "data source is unavailable")
+	case health.ErrorInvalidResponse:
+		handler.setAuditError(r, "invalid_response", audit.ResultFailed)
+		writeError(w, r, http.StatusBadGateway, "invalid_response", "data source returned an invalid response")
 	case health.ErrorResponseTooLarge:
+		handler.setAuditError(r, "response_too_large", audit.ResultFailed)
 		writeError(w, r, http.StatusBadGateway, "response_too_large", "data source response exceeded the limit")
 	default:
+		handler.setAuditError(r, "connection_test_failed", audit.ResultFailed)
 		writeError(w, r, http.StatusBadGateway, "connection_test_failed", "connection test failed")
+	}
+}
+
+type managementAuditState struct {
+	SourceType string
+	TemplateID string
+	Result     audit.Result
+	ErrorCode  string
+	SkipFinal  bool
+}
+
+type managementAuditContextKey struct{}
+
+type bufferedResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func newBufferedResponseWriter() *bufferedResponseWriter {
+	return &bufferedResponseWriter{header: make(http.Header)}
+}
+
+func (writer *bufferedResponseWriter) Header() http.Header {
+	return writer.header
+}
+
+func (writer *bufferedResponseWriter) WriteHeader(status int) {
+	if writer.status != 0 {
+		return
+	}
+	writer.status = status
+}
+
+func (writer *bufferedResponseWriter) Write(body []byte) (int, error) {
+	if writer.status == 0 {
+		writer.status = http.StatusOK
+	}
+	return writer.body.Write(body)
+}
+
+func (handler *handler) withManagementAudit(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.HandlerFunc,
+) {
+	state := &managementAuditState{}
+	r = r.WithContext(context.WithValue(r.Context(), managementAuditContextKey{}, state))
+	peekManagementAuditMetadata(r, state)
+
+	startedAt := time.Now()
+	buffered := newBufferedResponseWriter()
+	next(buffered, r)
+	if buffered.status == 0 {
+		buffered.status = http.StatusOK
+	}
+	if state.SkipFinal {
+		copyHTTPHeader(w.Header(), buffered.header)
+		w.WriteHeader(buffered.status)
+		_, _ = w.Write(buffered.body.Bytes())
+		return
+	}
+
+	errorCode := state.ErrorCode
+	if errorCode == "" {
+		errorCode = managementErrorCode(buffered.body.Bytes())
+	}
+	result := state.Result
+	if result == "" {
+		result = managementAuditResult(buffered.status, errorCode)
+	}
+	event := handler.newManagementAuditEvent(
+		r,
+		*state,
+		managementAuditAction(r),
+		result,
+		errorCode,
+		startedAt,
+	)
+	if _, err := handler.auditRecorder.Record(r.Context(), event); err != nil {
+		handler.writeManagementAuditUnavailable(w, r)
+		return
+	}
+	copyHTTPHeader(w.Header(), buffered.header)
+	w.WriteHeader(buffered.status)
+	_, _ = w.Write(buffered.body.Bytes())
+}
+
+func peekManagementAuditMetadata(r *http.Request, state *managementAuditState) {
+	if r.Body == nil ||
+		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxManagementBodyBytes+1))
+	if err != nil {
+		return
+	}
+	originalBody := r.Body
+	r.Body = &multiReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(body), originalBody),
+		Closer: originalBody,
+	}
+	var metadata struct {
+		SourceType datasource.SourceType `json:"source_type"`
+		TemplateID string                `json:"template_id"`
+	}
+	if json.Unmarshal(body, &metadata) != nil {
+		return
+	}
+	if metadata.SourceType != "" {
+		state.SourceType = string(metadata.SourceType)
+	}
+	state.TemplateID = strings.TrimSpace(metadata.TemplateID)
+}
+
+type multiReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func managementAuditAction(r *http.Request) audit.Action {
+	switch r.PathValue("action") {
+	case "queries":
+		return audit.ActionToolCalled
+	case "connection-test":
+		return audit.ActionConnectionTested
+	default:
+		return audit.ActionConfigChanged
+	}
+}
+
+func managementObjectID(r *http.Request) string {
+	id := r.PathValue("id")
+	if id == "" {
+		return "collection"
+	}
+	if !domain.IsID(id) {
+		return "invalid_id"
+	}
+	return id
+}
+
+func managementAuditResult(status int, errorCode string) audit.Result {
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		return audit.ResultSucceeded
+	}
+	switch errorCode {
+	case "unauthorized", "management_unavailable", "policy_rejected", "unsupported_runtime":
+		return audit.ResultDenied
+	default:
+		return audit.ResultFailed
+	}
+}
+
+func managementErrorCode(body []byte) string {
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return ""
+	}
+	return envelope.Error.Code
+}
+
+func (handler *handler) newManagementAuditEvent(
+	r *http.Request,
+	state managementAuditState,
+	action audit.Action,
+	result audit.Result,
+	errorCode string,
+	startedAt time.Time,
+) audit.Event {
+	parameters := map[string]any{
+		"elapsed_ms": max(time.Since(startedAt).Milliseconds(), 0),
+	}
+	if state.SourceType != "" {
+		parameters["source_type"] = state.SourceType
+	}
+	if state.TemplateID != "" {
+		parameters["template_id"] = state.TemplateID
+	}
+	if errorCode != "" {
+		parameters["error_code"] = errorCode
+	}
+	return audit.Event{
+		Actor:      "management-token",
+		Action:     action,
+		ObjectType: "data_source_mapping",
+		ObjectID:   managementObjectID(r),
+		Result:     result,
+		RequestID:  RequestIDFromContext(r.Context()),
+		Parameters: parameters,
+		OccurredAt: time.Now().UTC(),
+	}
+}
+
+func (handler *handler) recordDeniedManagementAttempt(
+	w http.ResponseWriter,
+	r *http.Request,
+	errorCode string,
+) bool {
+	startedAt := time.Now()
+	event := handler.newManagementAuditEvent(
+		r,
+		managementAuditState{},
+		managementAuditAction(r),
+		audit.ResultDenied,
+		errorCode,
+		startedAt,
+	)
+	if _, err := handler.auditRecorder.Record(r.Context(), event); err != nil {
+		handler.writeManagementAuditUnavailable(w, r)
+		return false
+	}
+	return true
+}
+
+func (handler *handler) preflightConnectionTestAudit(w http.ResponseWriter, r *http.Request) bool {
+	startedAt := time.Now()
+	state := auditStateFromRequest(r)
+	event := handler.newManagementAuditEvent(
+		r,
+		*state,
+		audit.ActionConnectionTested,
+		audit.ResultFailed,
+		"connection_test_started",
+		startedAt,
+	)
+	if _, err := handler.auditRecorder.Record(r.Context(), event); err != nil {
+		state.SkipFinal = true
+		state.ErrorCode = "internal_error"
+		handler.writeManagementAuditUnavailable(w, r)
+		return false
+	}
+	return true
+}
+
+func (handler *handler) setAuditError(r *http.Request, errorCode string, result audit.Result) {
+	state := auditStateFromRequest(r)
+	state.ErrorCode = errorCode
+	state.Result = result
+}
+
+func auditStateFromRequest(r *http.Request) *managementAuditState {
+	state, ok := r.Context().Value(managementAuditContextKey{}).(*managementAuditState)
+	if ok && state != nil {
+		return state
+	}
+	return &managementAuditState{}
+}
+
+func (handler *handler) writeManagementAuditUnavailable(w http.ResponseWriter, r *http.Request) {
+	handler.logger.Error(
+		"management audit unavailable",
+		"request_id", RequestIDFromContext(r.Context()),
+	)
+	writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func copyHTTPHeader(destination http.Header, source http.Header) {
+	for key, values := range source {
+		for _, value := range values {
+			destination.Add(key, value)
+		}
 	}
 }
 

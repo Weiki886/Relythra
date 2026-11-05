@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/audit"
 	"github.com/Weiki886/relythra/internal/security/redact"
 	"github.com/Weiki886/relythra/internal/store"
 )
@@ -22,6 +23,7 @@ type handler struct {
 	mappings           MappingRepository
 	adminAuthenticator AdminAuthenticator
 	connectionTester   ConnectionTester
+	auditRecorder      audit.Recorder
 	logger             *slog.Logger
 	filter             *redact.Filter
 }
@@ -57,6 +59,7 @@ func NewHandlerWithDependencies(
 		mappings:           dependencies.Mappings,
 		adminAuthenticator: dependencies.AdminAuthenticator,
 		connectionTester:   dependencies.ConnectionTester,
+		auditRecorder:      dependencies.AuditRecorder,
 		logger:             logger,
 		filter:             filter,
 	}

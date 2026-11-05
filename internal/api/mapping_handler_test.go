@@ -16,6 +16,7 @@ import (
 	"github.com/Weiki886/relythra/internal/connector/health"
 	"github.com/Weiki886/relythra/internal/datasource"
 	"github.com/Weiki886/relythra/internal/domain"
+	"github.com/Weiki886/relythra/internal/security/audit"
 	"github.com/Weiki886/relythra/internal/security/secrets"
 	"github.com/Weiki886/relythra/internal/store"
 )
@@ -493,12 +494,30 @@ func newMappingTestHandler(
 	if err != nil {
 		t.Fatalf("new authenticator: %v", err)
 	}
+	return newMappingTestHandlerWithDependencies(
+		t,
+		repository,
+		tester,
+		authenticator,
+		&capturingAuditRecorder{},
+	)
+}
+
+func newMappingTestHandlerWithDependencies(
+	t *testing.T,
+	repository MappingRepository,
+	tester ConnectionTester,
+	authenticator AdminAuthenticator,
+	recorder audit.Recorder,
+) http.Handler {
+	t.Helper()
 	return NewHandlerWithDependencies(
 		Dependencies{
 			Reader:             &fakeReader{},
 			Mappings:           repository,
 			AdminAuthenticator: authenticator,
 			ConnectionTester:   tester,
+			AuditRecorder:      recorder,
 		},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
