@@ -1,0 +1,26 @@
+apiVersion: 1
+prune: true
+datasources:
+  - name: Demo Prometheus
+    uid: demo-prometheus
+    type: prometheus
+    access: proxy
+    url: http://observability-gateway:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: GET
+      httpHeaderName1: Authorization
+      timeInterval: 5s
+    secureJsonData:
+      httpHeaderValue1: 'Bearer $DEMO_READ_TOKEN'
+  - name: Demo Loki
+    uid: demo-loki
+    type: loki
+    access: proxy
+    url: http://observability-gateway:3100
+    editable: false
+    jsonData:
+      httpHeaderName1: Authorization
+    secureJsonData:
+      httpHeaderValue1: 'Bearer $DEMO_READ_TOKEN'

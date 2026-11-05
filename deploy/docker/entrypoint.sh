@@ -27,4 +27,9 @@ if [ "${RELYTHRA_ADMIN_TOKEN_REF:-}" = "file:${source_management_secret}" ]; the
   export RELYTHRA_ADMIN_TOKEN_REF="file:${runtime_management_secret}"
 fi
 
+if [ -d /var/log/demo ]; then
+  chown relythra:relythra /var/log/demo
+  chmod 0750 /var/log/demo
+fi
+
 exec su-exec relythra /usr/local/bin/relythra "$@"

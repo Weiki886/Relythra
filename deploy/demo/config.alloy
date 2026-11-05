@@ -1,0 +1,41 @@
+logging { level = "warn" }
+local.file_match "demo" {
+  path_targets = [{"__path__" = "/var/log/demo/*/*.log", "project" = "relythra-demo", "env" = "demo"}]
+  sync_period = "2s"
+}
+loki.source.file "demo" {
+  targets = local.file_match.demo.targets
+  forward_to = [loki.process.demo.receiver]
+}
+loki.process "demo" {
+  stage.json {
+    expressions = { service = "service", host = "host", container = "container", release = "release", runtime_type = "runtime_type", timestamp = "time" }
+  }
+  stage.labels {
+    values = { service = "", host = "", container = "", release = "", runtime_type = "" }
+  }
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+  // Missing required labels remain visible in rejected-log metrics.
+  stage.match {
+    selector = "{service=\"\"}"
+    action = "drop"
+    drop_counter_reason = "missing_service"
+  }
+  stage.match {
+    selector = "{host=\"\"}"
+    action = "drop"
+    drop_counter_reason = "missing_host"
+  }
+  stage.match {
+    selector = "{container=\"\"}"
+    action = "drop"
+    drop_counter_reason = "missing_container"
+  }
+  forward_to = [loki.write.demo.receiver]
+}
+loki.write "demo" {
+  endpoint { url = "http://loki-store:3100/loki/api/v1/push" }
+}

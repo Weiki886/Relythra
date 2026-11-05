@@ -1,0 +1,262 @@
+# Overlay: docker compose -f deploy/compose/compose.yaml -f deploy/compose/demo.yaml ...
+x-observe-build: &observe-build
+  context: ../..
+  dockerfile: deploy/docker/observe.Dockerfile
+x-demo-build: &demo-build
+  context: ../..
+  dockerfile: deploy/docker/go.Dockerfile
+x-limits: &limits
+  cpus: 0.5
+  mem_limit: 256m
+  pids_limit: 128
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: "2"}
+x-health: &health
+  interval: 5s
+  timeout: 4s
+  retries: 30
+  start_period: 10s
+
+services:
+  postgres:
+    <<: *limits
+    networks: [control]
+  migrate:
+    <<: *limits
+    networks: [control]
+  api:
+    <<: *limits
+    networks: [control, diagnosis]
+    environment:
+      RELYTHRA_DATASOURCE_ALLOWED_HOSTS: observability-gateway,grafana
+      RELYTHRA_DATASOURCE_ALLOWED_PORTS: 9090,3100,3000
+    secrets:
+      - postgres_password
+      - management_token
+      - observability_token
+  worker:
+    <<: *limits
+    networks: [control, diagnosis, telemetry]
+  web:
+    <<: *limits
+    networks: [control]
+
+  demo-postgres:
+    <<: *limits
+    build:
+      context: ../..
+      dockerfile: deploy/docker/demo-postgres.Dockerfile
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/demo_owner_password
+    secrets: [demo_owner_password, demo_reader_password]
+    volumes:
+      - demo-postgres-data:/var/lib/postgresql/data
+    networks: [business]
+    healthcheck:
+      <<: *health
+      test: [CMD-SHELL, pg_isready -U demo_owner -d demo]
+
+  inventory:
+    <<: *limits
+    build:
+      <<: *demo-build
+      args: {BINARY: demo-inventory}
+    environment:
+      DEMO_RELEASE: ${DEMO_INVENTORY_RELEASE:-baseline}
+      DEMO_HOST_ID: demo-host
+      DEMO_ENABLE_FAULTS: ${DEMO_ENABLE_FAULTS:-false}
+      RELYTHRA_DATABASE_HOST: demo-postgres
+      RELYTHRA_DATABASE_PORT: "5432"
+      RELYTHRA_DATABASE_NAME: demo
+      RELYTHRA_DATABASE_USER: demo_reader
+      RELYTHRA_DATABASE_SSL_MODE: disable
+      RELYTHRA_DATABASE_PASSWORD_REF: file:/run/secrets/postgres_password
+    secrets:
+      - source: demo_reader_password
+        target: postgres_password
+    volumes: [inventory-logs:/var/log/demo]
+    networks: [business, telemetry]
+    depends_on:
+      demo-postgres: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/health/ready']
+
+  orders:
+    <<: *limits
+    build:
+      <<: *demo-build
+      args: {BINARY: demo-orders}
+    environment:
+      DEMO_RELEASE: ${DEMO_ORDERS_RELEASE:-baseline}
+      DEMO_HOST_ID: demo-host
+      DEMO_INVENTORY_URL: http://inventory:8080
+    volumes: [orders-logs:/var/log/demo]
+    networks: [business, telemetry, demo-ingress]
+    ports: ["127.0.0.1:${DEMO_ORDERS_PORT:-18090}:8080"]
+    depends_on:
+      inventory: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/health/ready']
+
+  prometheus-store:
+    <<: *limits
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2'}
+    command: [--config.file=/etc/prometheus/prometheus.yaml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=24h, --storage.tsdb.retention.size=256MB, --query.timeout=10s, --query.max-samples=100000]
+    volumes:
+      - ../demo/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    networks: [telemetry, observation-backend]
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:9090/-/ready']
+
+  loki-store:
+    <<: *limits
+    mem_limit: 384m
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28'}
+    command: [-config.file=/etc/loki/demo.yaml]
+    volumes:
+      - ../demo/loki.yaml:/etc/loki/demo.yaml:ro
+      - loki-data:/loki
+    networks: [observation-backend]
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:3100/ready']
+
+  alloy:
+    <<: *limits
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'grafana/alloy:v1.21.3@sha256:8ab871206bd2d8f89277f53abffee5f452a293980788d52f85fa183a87a505a4'}
+    command: [run, --server.http.listen-addr=0.0.0.0:12345, --storage.path=/var/lib/alloy, /etc/alloy/config.alloy]
+    volumes:
+      - ../demo/config.alloy:/etc/alloy/config.alloy:ro
+      - orders-logs:/var/log/demo/orders:ro
+      - inventory-logs:/var/log/demo/inventory:ro
+      - alloy-data:/var/lib/alloy
+    networks: [observation-backend]
+    depends_on:
+      loki-store: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:12345/-/ready']
+
+  observability-gateway:
+    <<: *limits
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    entrypoint: [/bin/sh, /etc/nginx/demo-entrypoint.sh]
+    volumes:
+      - ../demo/gateway-entrypoint.sh:/etc/nginx/demo-entrypoint.sh:ro
+      - ../demo/gateway.conf.template:/etc/nginx/demo.conf.template:ro
+    tmpfs: [/etc/nginx/conf.d:mode=0700]
+    secrets: [observability_token]
+    networks: [diagnosis, observation-backend]
+    ports:
+      - "127.0.0.1:${DEMO_PROMETHEUS_PORT:-19090}:9090"
+      - "127.0.0.1:${DEMO_LOKI_PORT:-13100}:3100"
+    depends_on:
+      prometheus-store: {condition: service_healthy}
+      loki-store: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:9090/healthz']
+
+  grafana:
+    <<: *limits
+    mem_limit: 384m
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205'}
+    # Bootstrap reads host Secret files, then explicitly drops to Grafana's UID.
+    user: "0"
+    entrypoint: [/bin/sh, /etc/grafana/demo-entrypoint.sh]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ALERTING_ENABLED: "false"
+    secrets: [grafana_admin_password, observability_token]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../demo/grafana-entrypoint.sh:/etc/grafana/demo-entrypoint.sh:ro
+      - ../demo/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ../demo/grafana/alerting:/etc/grafana/provisioning/alerting:ro
+      - ../demo/grafana/dashboards/provider.yaml:/etc/grafana/provisioning/dashboards/demo.yaml:ro
+      - ../demo/grafana/dashboards/demo.json:/etc/grafana/dashboards/demo.json:ro
+    networks: [diagnosis]
+    ports: ["127.0.0.1:${DEMO_GRAFANA_PORT:-13001}:3000"]
+    depends_on:
+      observability-gateway: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:3000/api/health']
+
+  node-exporter:
+    <<: *limits
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0'}
+    command: [--path.procfs=/host/proc, --path.sysfs=/host/sys, --path.rootfs=/host/root, --collector.disable-defaults, --collector.cpu, --collector.meminfo, --collector.filesystem, --collector.loadavg, --collector.time]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    networks: [telemetry]
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:9100/metrics']
+
+  cadvisor:
+    <<: *limits
+    build:
+      <<: *observe-build
+      args: {IMAGE: 'ghcr.io/google/cadvisor:0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a'}
+    cgroup: host
+    command: [--docker_only=false, --store_container_labels=false, --raw_cgroup_prefix_whitelist=/, --housekeeping_interval=10s, --disable_metrics=disk,diskIO,network,tcp,udp,percpu,sched,process,referenced_memory,hugetlb,resctrl]
+    volumes:
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+    networks: [telemetry]
+    healthcheck:
+      <<: *health
+      test: [CMD, /usr/local/bin/relythra-probe, 'http://127.0.0.1:8080/healthz']
+
+networks:
+  control: {}
+  business: {internal: true}
+  telemetry: {internal: true}
+  observation-backend: {internal: true}
+  diagnosis: {}
+  demo-ingress: {}
+volumes:
+  demo-postgres-data: {}
+  orders-logs: {}
+  inventory-logs: {}
+  prometheus-data: {}
+  loki-data: {}
+  alloy-data: {}
+  grafana-data: {}
+secrets:
+  demo_owner_password:
+    file: ${DEMO_OWNER_PASSWORD_FILE:?Set DEMO_OWNER_PASSWORD_FILE}
+  demo_reader_password:
+    file: ${DEMO_READER_PASSWORD_FILE:?Set DEMO_READER_PASSWORD_FILE}
+  observability_token:
+    file: ${DEMO_OBSERVABILITY_TOKEN_FILE:?Set DEMO_OBSERVABILITY_TOKEN_FILE}
+  grafana_admin_password:
+    file: ${DEMO_GRAFANA_PASSWORD_FILE:?Set DEMO_GRAFANA_PASSWORD_FILE}
