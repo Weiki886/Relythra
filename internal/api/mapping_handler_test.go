@@ -302,8 +302,46 @@ func TestQueryEndpointReturnsNormalizedFixedTemplatePlan(t *testing.T) {
 		`"template_id":"prometheus.service.latency.v1"`,
 		`"max_series":40`,
 		`"environment":"prod"`,
+		`"query_type":"range"`,
 		`"step":30000000000`,
 		`"max_points":200`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("response missing %s: %s", expected, response.Body.String())
+		}
+	}
+}
+
+func TestQueryEndpointReturnsNormalizedInstantPlan(t *testing.T) {
+	t.Parallel()
+
+	mapping := validPrometheusMapping()
+	mapping.Templates[0].AllowedParameters = []string{"end", "max_series", "service", "start"}
+	repository := &fakeMappingStore{mapping: mapping}
+	handler := newMappingTestHandler(t, repository, nil, "management-token-canary")
+	request := authenticatedJSONRequest(
+		http.MethodPost,
+		"/api/v1/data-source-mappings/"+mappingID+"/queries",
+		`{
+			"template_id":"prometheus.service.latency.v1",
+			"parameters":{
+				"service":"checkout-api",
+				"environment":"prod",
+				"query_type":"instant",
+				"at":"2026-11-04T05:30:00Z"
+			}
+		}`,
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		`"query_type":"instant"`,
+		`"start":"2026-11-04T05:30:00Z"`,
+		`"end":"2026-11-04T05:30:00Z"`,
+		`"max_points":1`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("response missing %s: %s", expected, response.Body.String())
@@ -553,7 +591,7 @@ func validPrometheusMapping() store.DataSourceMapping {
 			Source:            datasource.SourcePrometheus,
 			Purpose:           "Read latency",
 			ResultSchema:      "metric.series.v1",
-			AllowedParameters: []string{"end", "environment", "max_points", "max_series", "service", "start", "step"},
+			AllowedParameters: []string{"at", "end", "environment", "max_points", "max_series", "query_type", "service", "start", "step"},
 		}},
 		SecretRef: "env:MAPPING_SECRET_CANARY",
 		Version:   3,

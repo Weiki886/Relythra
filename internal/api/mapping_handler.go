@@ -128,6 +128,7 @@ type queryPlanView struct {
 	Version     int           `json:"version"`
 	Service     string        `json:"service"`
 	Environment string        `json:"environment,omitempty"`
+	QueryType   string        `json:"query_type,omitempty"`
 	Start       time.Time     `json:"start"`
 	End         time.Time     `json:"end"`
 	Step        time.Duration `json:"step,omitempty"`
@@ -426,6 +427,7 @@ func (handler *handler) planMappingQuery(w http.ResponseWriter, r *http.Request)
 		Version:     normalized.Version,
 		Service:     normalized.Service,
 		Environment: normalized.Environment,
+		QueryType:   normalized.QueryType,
 		Start:       normalized.Start,
 		End:         normalized.End,
 		Step:        normalized.Step,
@@ -556,7 +558,11 @@ func newMappingView(mapping store.DataSourceMapping) mappingView {
 func findTemplate(templates []datasource.Template, id string) (datasource.Template, bool) {
 	for _, template := range templates {
 		if template.ID == id {
-			return template, true
+			registered, issues := datasource.ResolveTemplates(template.Source, []string{id})
+			if len(issues) != 0 || len(registered) != 1 {
+				return datasource.Template{}, false
+			}
+			return registered[0], true
 		}
 	}
 	return datasource.Template{}, false
@@ -570,6 +576,8 @@ func parseQueryParameters(values map[string]any) (datasource.QueryParameters, []
 	issues := make([]datasource.ValidationIssue, 0)
 	parameters.Service, _ = queryString(values, "service", &issues)
 	parameters.Environment, _ = queryString(values, "environment", &issues)
+	parameters.QueryType, _ = queryString(values, "query_type", &issues)
+	parameters.At, _ = queryString(values, "at", &issues)
 	parameters.Start, _ = queryString(values, "start", &issues)
 	parameters.End, _ = queryString(values, "end", &issues)
 	parameters.Step, _ = queryString(values, "step", &issues)

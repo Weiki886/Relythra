@@ -142,3 +142,35 @@ func TestValidatePrometheusQueryRejectsEnvironmentAndPointBudgetBeforeExecution(
 		t.Fatalf("total sample issues = %#v", issues)
 	}
 }
+
+func TestValidatePrometheusInstantQueryUsesSingleBoundedTimestamp(t *testing.T) {
+	templates, _ := ResolveTemplates(SourcePrometheus, []string{"prometheus.service.request_rate.v1"})
+	query, issues := ValidateQuery(templates[0], QueryParameters{
+		Service: "checkout-api", Environment: "prod", QueryType: QueryTypeInstant,
+		At: "2026-11-04T05:30:00Z",
+	})
+	if len(issues) != 0 {
+		t.Fatalf("instant query issues = %#v", issues)
+	}
+	if query.QueryType != QueryTypeInstant || !query.Start.Equal(query.End) || query.End.Format(time.RFC3339) != "2026-11-04T05:30:00Z" || query.Step != 0 || query.MaxPoints != 1 {
+		t.Fatalf("normalized instant query = %#v", query)
+	}
+}
+
+func TestValidatePrometheusQueryDefaultsToRangeAndRejectsAmbiguousInstantTimes(t *testing.T) {
+	templates, _ := ResolveTemplates(SourcePrometheus, []string{"prometheus.service.request_rate.v1"})
+	query, issues := ValidateQuery(templates[0], QueryParameters{
+		Service: "checkout-api", Environment: "prod",
+		Start: "2026-11-04T05:00:00Z", End: "2026-11-04T06:00:00Z",
+	})
+	if len(issues) != 0 || query.QueryType != QueryTypeRange {
+		t.Fatalf("default range query = %#v, issues=%#v", query, issues)
+	}
+	_, issues = ValidateQuery(templates[0], QueryParameters{
+		Service: "checkout-api", Environment: "prod", QueryType: QueryTypeInstant,
+		At: "2026-11-04T05:30:00Z", Start: "2026-11-04T05:00:00Z",
+	})
+	if !hasIssue(issues, "parameters.start", "unsupported_parameter") {
+		t.Fatalf("ambiguous instant query issues = %#v", issues)
+	}
+}

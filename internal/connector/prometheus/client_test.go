@@ -91,6 +91,36 @@ func TestQuerySupportsOnlyRegisteredPrometheusTemplates(t *testing.T) {
 	}
 }
 
+func TestInstantQueryUsesFixedTemplateAndParsesVectorResponse(t *testing.T) {
+	const instant = `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"service":"checkout-api","env":"prod","route":"/orders"},"value":[1793772300,"12.5"]}]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/query" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if err := request.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		if request.Form.Get("time") != "1793772300.000" || request.Form.Has("start") || request.Form.Has("end") || request.Form.Has("step") {
+			t.Errorf("instant parameters = %#v", request.Form)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, instant)
+	}))
+	defer server.Close()
+
+	query := validQuery("prometheus.service.request_rate.v1")
+	query.QueryType = datasource.QueryTypeInstant
+	query.Start = query.End
+	query.Step, query.MaxPoints = 0, 1
+	result, err := newTestConnector(t, server, nil).Query(context.Background(), Target{Endpoint: server.URL}, query)
+	if err != nil {
+		t.Fatalf("instant Query: %v", err)
+	}
+	if result.QueryType != datasource.QueryTypeInstant || len(result.Series) != 1 || len(result.Series[0].Samples) != 1 || result.Series[0].Samples[0].Value != 12.5 || !result.Series[0].Samples[0].Timestamp.Equal(query.End) {
+		t.Fatalf("instant result = %+v", result)
+	}
+}
+
 func TestQueryMarksWarningsAndMalformedSeriesPartialWhileKeepingValidSeries(t *testing.T) {
 	body := `{"status":"success","warnings":["partial response"],"data":{"resultType":"matrix","result":[{"metric":{"service":"checkout-api","env":"prod"},"values":[[1793772000,"1"]]},{"metric":{"service":"bad"},"values":[["bad","NaN"]]}]}}`
 	server, _ := newCountingServer(t, body)

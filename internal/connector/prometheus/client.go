@@ -101,6 +101,7 @@ type Series struct {
 type Result struct {
 	TemplateID      string        `json:"template_id"`
 	TemplateVersion int           `json:"template_version"`
+	QueryType       string        `json:"query_type"`
 	Query           string        `json:"query"`
 	Unit            string        `json:"unit"`
 	Start           time.Time     `json:"start"`
@@ -178,20 +179,30 @@ func (connector *Connector) Query(ctx context.Context, target Target, query data
 	if err := validateNormalizedQuery(query); err != nil {
 		return Result{}, queryError(ErrorInvalidQuery, err)
 	}
+	queryType := query.QueryType
+	if queryType == "" {
+		queryType = datasource.QueryTypeRange
+	}
 	endpoint, err := url.Parse(strings.TrimSpace(target.Endpoint))
 	if err != nil || endpoint == nil || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return Result{}, queryError(ErrorPolicyRejected, outbound.ErrInvalidTarget)
 	}
 	base := strings.TrimRight(endpoint.String(), "/")
-	requestURL := base + "/api/v1/query_range"
+	requestPath := "/api/v1/query_range"
+	if queryType == datasource.QueryTypeInstant {
+		requestPath = "/api/v1/query"
+	}
+	requestURL := base + requestPath
 	if _, err := connector.policy.Validate(ctx, target.Endpoint); err != nil {
 		return Result{}, queryError(ErrorPolicyRejected, err)
 	}
-	values := url.Values{
-		"query": []string{expression},
-		"start": []string{strconv.FormatFloat(float64(query.Start.UnixNano())/float64(time.Second), 'f', 3, 64)},
-		"end":   []string{strconv.FormatFloat(float64(query.End.UnixNano())/float64(time.Second), 'f', 3, 64)},
-		"step":  []string{query.Step.String()},
+	values := url.Values{"query": []string{expression}}
+	if queryType == datasource.QueryTypeInstant {
+		values.Set("time", strconv.FormatFloat(float64(query.End.UnixNano())/float64(time.Second), 'f', 3, 64))
+	} else {
+		values.Set("start", strconv.FormatFloat(float64(query.Start.UnixNano())/float64(time.Second), 'f', 3, 64))
+		values.Set("end", strconv.FormatFloat(float64(query.End.UnixNano())/float64(time.Second), 'f', 3, 64))
+		values.Set("step", query.Step.String())
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(values.Encode()))
 	if err != nil {
@@ -235,13 +246,13 @@ func (connector *Connector) Query(ctx context.Context, target Target, query data
 	case response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices:
 		return Result{}, queryError(ErrorRemoteUnavailable, fmt.Errorf("HTTP status %d", response.StatusCode))
 	}
-	parsed, err := parseResponse(body)
+	parsed, err := parseResponse(body, queryType)
 	if err != nil {
 		return Result{}, queryError(ErrorInvalidResponse, err)
 	}
 	digest := sha256.Sum256(body)
 	result := Result{
-		TemplateID: query.TemplateID, TemplateVersion: query.Version, Query: expression, Unit: unit,
+		TemplateID: query.TemplateID, TemplateVersion: query.Version, QueryType: queryType, Query: expression, Unit: unit,
 		Start: query.Start, End: query.End, Step: query.Step, Duration: time.Since(started),
 		SourceReference: requestURL, ResponseSHA256: hex.EncodeToString(digest[:]),
 		Series:   make([]Series, 0, min(len(parsed.Data.Result), query.MaxSeries)),
@@ -313,9 +324,10 @@ type responseEnvelope struct {
 type rawSeries struct {
 	Metric map[string]any      `json:"metric"`
 	Values [][]json.RawMessage `json:"values"`
+	Value  []json.RawMessage   `json:"value"`
 }
 
-func parseResponse(body []byte) (responseEnvelope, error) {
+func parseResponse(body []byte, queryType string) (responseEnvelope, error) {
 	var response responseEnvelope
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.UseNumber()
@@ -325,8 +337,15 @@ func parseResponse(body []byte) (responseEnvelope, error) {
 	if response.Status != "success" {
 		return responseEnvelope{}, errors.New("Prometheus API response status is not success")
 	}
-	if response.Data.ResultType != "matrix" {
-		return responseEnvelope{}, errors.New("query_range response is not a matrix")
+	expectedType := "matrix"
+	if queryType == datasource.QueryTypeInstant {
+		expectedType = "vector"
+		for index := range response.Data.Result {
+			response.Data.Result[index].Values = [][]json.RawMessage{response.Data.Result[index].Value}
+		}
+	}
+	if response.Data.ResultType != expectedType {
+		return responseEnvelope{}, errors.New("Prometheus response type does not match the query")
 	}
 	return response, nil
 }
@@ -408,10 +427,21 @@ func validateNormalizedQuery(query datasource.NormalizedQuery) error {
 	if len(issues) != 0 || len(templates) != 1 || templates[0].Version != query.Version {
 		return errors.New("template is not registered for Prometheus")
 	}
+	queryType := query.QueryType
+	if queryType == "" {
+		queryType = datasource.QueryTypeRange
+	}
 	parameters := datasource.QueryParameters{
 		Service: query.Service, Environment: query.Environment,
-		Start: query.Start.Format(time.RFC3339), End: query.End.Format(time.RFC3339),
-		Step: query.Step.String(), MaxSeries: query.MaxSeries, MaxPoints: query.MaxPoints,
+		QueryType: queryType,
+		MaxSeries: query.MaxSeries, MaxPoints: query.MaxPoints,
+	}
+	if queryType == datasource.QueryTypeInstant {
+		parameters.At = query.End.Format(time.RFC3339Nano)
+	} else {
+		parameters.Start = query.Start.Format(time.RFC3339Nano)
+		parameters.End = query.End.Format(time.RFC3339Nano)
+		parameters.Step = query.Step.String()
 	}
 	_, issues = datasource.ValidateQuery(templates[0], parameters)
 	if len(issues) != 0 {

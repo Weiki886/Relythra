@@ -9,6 +9,9 @@ import (
 )
 
 const (
+	QueryTypeRange   = "range"
+	QueryTypeInstant = "instant"
+
 	DefaultQueryLimit     = 20
 	MaxQueryLimit         = 100
 	DefaultQueryMaxSeries = 20
@@ -34,6 +37,8 @@ type Template struct {
 type QueryParameters struct {
 	Service     string
 	Environment string
+	QueryType   string
+	At          string
 	Start       string
 	End         string
 	Step        string
@@ -49,6 +54,7 @@ type NormalizedQuery struct {
 	Version     int
 	Service     string
 	Environment string
+	QueryType   string
 	Start       time.Time
 	End         time.Time
 	Step        time.Duration
@@ -68,7 +74,7 @@ var commonParameters = []string{
 }
 
 var prometheusParameters = []string{
-	"end", "environment", "max_points", "max_series", "service", "start", "step",
+	"at", "end", "environment", "max_points", "max_series", "query_type", "service", "start", "step",
 }
 
 var templateRegistry = map[string]Template{
@@ -220,27 +226,56 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 		))
 	}
 	environment := strings.TrimSpace(parameters.Environment)
+	queryType := ""
+	var start, end time.Time
+	var startOK, endOK bool
 	if template.Source == SourcePrometheus {
 		if !servicePattern.MatchString(environment) {
 			issues = append(issues, issue("parameters.environment", "required", "environment must be a lowercase environment slug"))
 		}
+		queryType = strings.TrimSpace(parameters.QueryType)
+		if queryType == "" {
+			queryType = QueryTypeRange
+		}
+		switch queryType {
+		case QueryTypeRange:
+			if strings.TrimSpace(parameters.At) != "" {
+				issues = append(issues, issue("parameters.at", "unsupported_parameter", "at is only allowed for instant queries"))
+			}
+			start, startOK = parseQueryTime(parameters.Start, "parameters.start", &issues)
+			end, endOK = parseQueryTime(parameters.End, "parameters.end", &issues)
+		case QueryTypeInstant:
+			if strings.TrimSpace(parameters.Start) != "" {
+				issues = append(issues, issue("parameters.start", "unsupported_parameter", "start is not allowed for instant queries"))
+			}
+			if strings.TrimSpace(parameters.End) != "" {
+				issues = append(issues, issue("parameters.end", "unsupported_parameter", "end is not allowed for instant queries"))
+			}
+			start, startOK = parseQueryTime(parameters.At, "parameters.at", &issues)
+			end, endOK = start, startOK
+		default:
+			issues = append(issues, issue("parameters.query_type", "unsupported_value", "query_type must be range or instant"))
+		}
+	} else {
+		start, startOK = parseQueryTime(parameters.Start, "parameters.start", &issues)
+		end, endOK = parseQueryTime(parameters.End, "parameters.end", &issues)
 	}
-	start, startOK := parseQueryTime(parameters.Start, "parameters.start", &issues)
-	end, endOK := parseQueryTime(parameters.End, "parameters.end", &issues)
 	if startOK && endOK {
-		switch {
-		case !end.After(start):
-			issues = append(issues, issue(
-				"parameters.end",
-				"invalid_range",
-				"query end must be after query start",
-			))
-		case end.Sub(start) > MaxQueryWindow:
-			issues = append(issues, issue(
-				"parameters.end",
-				"window_too_large",
-				"query window exceeds the fixed maximum",
-			))
+		if template.Source != SourcePrometheus || queryType == QueryTypeRange {
+			switch {
+			case !end.After(start):
+				issues = append(issues, issue(
+					"parameters.end",
+					"invalid_range",
+					"query end must be after query start",
+				))
+			case end.Sub(start) > MaxQueryWindow:
+				issues = append(issues, issue(
+					"parameters.end",
+					"window_too_large",
+					"query window exceeds the fixed maximum",
+				))
+			}
 		}
 	}
 
@@ -272,22 +307,32 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 	maxPoints := parameters.MaxPoints
 	step := time.Duration(0)
 	if template.Source == SourcePrometheus {
-		step = DefaultQueryStep
-		if parameters.Step != "" {
-			parsed, err := time.ParseDuration(strings.TrimSpace(parameters.Step))
-			if err != nil || parsed < MinQueryStep || parsed > MaxQueryStep || parsed%time.Second != 0 {
-				issues = append(issues, issue("parameters.step", "out_of_range", "step must be a whole-second duration from 5s through 5m"))
-			} else {
-				step = parsed
+		if queryType == QueryTypeInstant {
+			maxPoints = 1
+			if strings.TrimSpace(parameters.Step) != "" {
+				issues = append(issues, issue("parameters.step", "unsupported_parameter", "step is only allowed for range queries"))
 			}
-		}
-		if maxPoints == 0 {
-			maxPoints = DefaultQueryMaxPoints
-		}
-		if maxPoints < 2 || maxPoints > MaxQueryMaxPoints {
-			issues = append(issues, issue("parameters.max_points", "out_of_range", "maximum points must be between 2 and the global limit"))
-		} else if startOK && endOK && end.After(start) && int(end.Sub(start)/step)+1 > maxPoints {
-			issues = append(issues, issue("parameters.max_points", "insufficient_budget", "time range and step exceed the requested per-series point budget"))
+			if parameters.MaxPoints != 0 && parameters.MaxPoints != 1 {
+				issues = append(issues, issue("parameters.max_points", "out_of_range", "instant queries return exactly one point per series"))
+			}
+		} else {
+			step = DefaultQueryStep
+			if parameters.Step != "" {
+				parsed, err := time.ParseDuration(strings.TrimSpace(parameters.Step))
+				if err != nil || parsed < MinQueryStep || parsed > MaxQueryStep || parsed%time.Second != 0 {
+					issues = append(issues, issue("parameters.step", "out_of_range", "step must be a whole-second duration from 5s through 5m"))
+				} else {
+					step = parsed
+				}
+			}
+			if maxPoints == 0 {
+				maxPoints = DefaultQueryMaxPoints
+			}
+			if maxPoints < 2 || maxPoints > MaxQueryMaxPoints {
+				issues = append(issues, issue("parameters.max_points", "out_of_range", "maximum points must be between 2 and the global limit"))
+			} else if startOK && endOK && end.After(start) && int(end.Sub(start)/step)+1 > maxPoints {
+				issues = append(issues, issue("parameters.max_points", "insufficient_budget", "time range and step exceed the requested per-series point budget"))
+			}
 		}
 		if maxSeries > 0 && maxPoints > 0 && maxSeries*maxPoints > MaxQueryTotalPoints {
 			issues = append(issues, issue("parameters.max_points", "total_sample_budget_exceeded", "series and point budgets exceed the total sample limit"))
@@ -304,7 +349,7 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 
 	return NormalizedQuery{
 		TemplateID: template.ID, Version: template.Version,
-		Service: service, Environment: environment,
+		Service: service, Environment: environment, QueryType: queryType,
 		Start: start.UTC(), End: end.UTC(), Step: step,
 		Limit: limit, Cursor: cursor, MaxSeries: maxSeries, MaxPoints: maxPoints,
 	}, issues
