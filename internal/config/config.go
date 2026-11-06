@@ -28,6 +28,7 @@ type API struct {
 	AdminToken              secrets.Secret
 	DeploymentWebhookSecret secrets.Secret
 	DeploymentWebhookSource string
+	GrafanaWebhookSecret    secrets.Secret
 	ManagementActor         string
 	DataSourcePolicy        outbound.PolicyConfig
 	ShutdownTimeout         time.Duration
@@ -61,6 +62,10 @@ func LoadAPI(getenv func(string) string) (API, error) {
 	if err != nil {
 		return API{}, err
 	}
+	grafanaWebhookSecret, err := loadGrafanaWebhook(getenv)
+	if err != nil {
+		return API{}, err
+	}
 	dataSourcePolicy, err := loadDataSourcePolicy(getenv)
 	if err != nil {
 		return API{}, err
@@ -72,10 +77,27 @@ func LoadAPI(getenv func(string) string) (API, error) {
 		AdminToken:              adminToken,
 		DeploymentWebhookSecret: deploymentWebhookSecret,
 		DeploymentWebhookSource: deploymentWebhookSource,
+		GrafanaWebhookSecret:    grafanaWebhookSecret,
 		ManagementActor:         valueOrDefault(strings.TrimSpace(getenv("RELYTHRA_MANAGEMENT_ACTOR")), "management-token"),
 		DataSourcePolicy:        dataSourcePolicy,
 		ShutdownTimeout:         shutdownTimeout,
 	}, nil
+}
+
+func loadGrafanaWebhook(getenv func(string) string) (secrets.Secret, error) {
+	rawReference := strings.TrimSpace(getenv("RELYTHRA_GRAFANA_WEBHOOK_SECRET_REF"))
+	if rawReference == "" {
+		return secrets.Secret{}, nil
+	}
+	reference, err := secrets.ParseReference(rawReference)
+	if err != nil {
+		return secrets.Secret{}, fmt.Errorf("RELYTHRA_GRAFANA_WEBHOOK_SECRET_REF is invalid")
+	}
+	secret, err := secrets.NewResolver(nil, nil).Resolve(context.Background(), reference)
+	if err != nil || secret.Reveal() == "" {
+		return secrets.Secret{}, fmt.Errorf("RELYTHRA_GRAFANA_WEBHOOK_SECRET_REF could not be resolved")
+	}
+	return secret, nil
 }
 
 func loadDeploymentWebhook(getenv func(string) string) (secrets.Secret, string, error) {

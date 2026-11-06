@@ -68,6 +68,8 @@ type Dependencies struct {
 	AuditRecorder           audit.Recorder
 	DeploymentWebhookSecret secrets.Secret
 	DeploymentWebhookSource string
+	GrafanaWebhookSecret    secrets.Secret
+	GrafanaAlerts           store.GrafanaAlertRepository
 	ManagementActor         string
 }
 

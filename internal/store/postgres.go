@@ -495,23 +495,25 @@ type CreateAlertInput struct {
 }
 
 type Alert struct {
-	ID              string          `json:"id"`
-	ProjectID       string          `json:"project_id"`
-	ServiceID       *string         `json:"service_id"`
-	Environment     *string         `json:"environment"`
-	Fingerprint     string          `json:"fingerprint"`
-	IdempotencyKey  string          `json:"idempotency_key"`
-	Status          string          `json:"status"`
-	Severity        string          `json:"severity"`
-	Summary         string          `json:"summary"`
-	StartsAt        time.Time       `json:"starts_at"`
-	EndsAt          *time.Time      `json:"ends_at"`
-	Labels          json.RawMessage `json:"labels"`
-	Annotations     json.RawMessage `json:"annotations"`
-	RedactedPayload json.RawMessage `json:"redacted_payload"`
-	SourceReference string          `json:"source_reference"`
-	SourceTimezone  string          `json:"source_timezone"`
-	SourceTimeText  string          `json:"source_time_text"`
+	ID                 string          `json:"id"`
+	ProjectID          string          `json:"project_id"`
+	ServiceID          *string         `json:"service_id"`
+	Environment        *string         `json:"environment"`
+	Fingerprint        string          `json:"fingerprint"`
+	FingerprintVersion string          `json:"fingerprint_version"`
+	EventVersion       int64           `json:"event_version"`
+	IdempotencyKey     string          `json:"idempotency_key"`
+	Status             string          `json:"status"`
+	Severity           string          `json:"severity"`
+	Summary            string          `json:"summary"`
+	StartsAt           time.Time       `json:"starts_at"`
+	EndsAt             *time.Time      `json:"ends_at"`
+	Labels             json.RawMessage `json:"labels"`
+	Annotations        json.RawMessage `json:"annotations"`
+	RedactedPayload    json.RawMessage `json:"redacted_payload"`
+	SourceReference    string          `json:"source_reference"`
+	SourceTimezone     string          `json:"source_timezone"`
+	SourceTimeText     string          `json:"source_time_text"`
 }
 
 func (repository *Postgres) CreateAlert(
@@ -1009,6 +1011,8 @@ const alertColumns = `
 	service_id::text,
 	environment,
 	fingerprint,
+	fingerprint_version,
+	event_version,
 	idempotency_key,
 	status,
 	severity,
@@ -1037,6 +1041,8 @@ func scanAlert(row scanner) (Alert, error) {
 		&serviceID,
 		&environment,
 		&alert.Fingerprint,
+		&alert.FingerprintVersion,
+		&alert.EventVersion,
 		&alert.IdempotencyKey,
 		&alert.Status,
 		&alert.Severity,

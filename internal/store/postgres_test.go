@@ -303,6 +303,226 @@ func TestCreateAlertReusesFingerprintWindow(t *testing.T) {
 	}
 }
 
+func TestIngestGrafanaAlertCreatesIncidentAndReusesItOnDuplicate(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "grafana-ingestion")
+	repository := NewPostgres(db)
+	input := GrafanaAlertInput{
+		ProjectSlug: "grafana-ingestion", ServiceSlug: "checkout-api", Environment: "prod",
+		Fingerprint: "sha256:fingerprint", FingerprintVersion: "sha256-v1", Status: "FIRING",
+		Severity: "ERROR", Summary: "Checkout latency is high", StartsAt: fixture.startedAt,
+		SourceTimezone: "+08:00", SourceTimeText: "2026-11-05T20:00:00+08:00",
+		Labels:          json.RawMessage(`{"project":"grafana-ingestion","service":"checkout-api","env":"prod"}`),
+		Annotations:     json.RawMessage(`{"summary":"Checkout latency is high"}`),
+		RedactedPayload: json.RawMessage(`{"status":"firing","alerts":[]}`),
+	}
+	first, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, "grafana-request-1")
+	if err != nil {
+		t.Fatalf("ingest firing alert: %v", err)
+	}
+	if len(first) != 1 || !first[0].Created || first[0].MatchState != "MATCHED" || first[0].InvestigationID == "" {
+		t.Fatalf("first ingestion = %+v", first)
+	}
+	if first[0].Alert.SourceTimezone != input.SourceTimezone || first[0].Alert.SourceTimeText != input.SourceTimeText {
+		t.Fatalf("persisted source timestamp = %q / %q", first[0].Alert.SourceTimezone, first[0].Alert.SourceTimeText)
+	}
+	second, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, "grafana-request-2")
+	if err != nil {
+		t.Fatalf("ingest duplicate alert: %v", err)
+	}
+	if len(second) != 1 || second[0].Created || !second[0].Duplicate ||
+		second[0].Alert.ID != first[0].Alert.ID || second[0].IncidentID != first[0].IncidentID ||
+		second[0].InvestigationID != first[0].InvestigationID {
+		t.Fatalf("duplicate ingestion = %+v; first = %+v", second, first)
+	}
+
+	resolvedAt := fixture.startedAt.Add(5 * time.Minute)
+	input.Status = "RESOLVED"
+	input.EndsAt = &resolvedAt
+	resolved, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, "grafana-request-3")
+	if err != nil {
+		t.Fatalf("ingest resolved alert: %v", err)
+	}
+	if resolved[0].Alert.Status != "RESOLVED" || resolved[0].Alert.EndsAt == nil || resolved[0].InvestigationID != first[0].InvestigationID {
+		t.Fatalf("resolved ingestion = %+v", resolved[0])
+	}
+	var deliveryCount, investigationCount, deploymentCount int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM alert_deliveries WHERE alert_id = $1`, first[0].Alert.ID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count alert deliveries: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM investigations WHERE incident_id = $1`, first[0].IncidentID).Scan(&investigationCount); err != nil {
+		t.Fatalf("count investigations: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM incidents WHERE id = $1 AND status = 'RESOLVED' AND ended_at = $2`, first[0].IncidentID, resolvedAt).Scan(&deploymentCount); err != nil {
+		t.Fatalf("check resolved incident: %v", err)
+	}
+	if deliveryCount != 3 || investigationCount != 1 || deploymentCount != 1 {
+		t.Fatalf("delivery/investigation/resolved incident counts = %d/%d/%d", deliveryCount, investigationCount, deploymentCount)
+	}
+}
+
+func TestIngestGrafanaAlertAllowsRepeatedFingerprintWithinOneRequest(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "grafana-batch-duplicate")
+	repository := NewPostgres(db)
+	input := fixtureAlertInput(fixture, "same-envelope-fingerprint")
+	input.ProjectSlug = "grafana-batch-duplicate"
+
+	results, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input, input}, "grafana-shared-request")
+	if err != nil {
+		t.Fatalf("ingest repeated fingerprint in one request: %v", err)
+	}
+	if len(results) != 2 || results[0].Alert.ID != results[1].Alert.ID || results[1].Duplicate != true {
+		t.Fatalf("batch results = %+v", results)
+	}
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM alert_deliveries WHERE alert_id = $1 AND request_id = $2`, results[0].Alert.ID, "grafana-shared-request").Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 2 {
+		t.Fatalf("delivery count = %d, want each alert entry retained", deliveryCount)
+	}
+}
+
+func TestIngestGrafanaAlertLeavesUnknownServiceForMappingAndRollsBackWholeBatch(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "grafana-unmapped")
+	repository := NewPostgres(db)
+	input := GrafanaAlertInput{
+		ProjectSlug: "grafana-unmapped", ServiceSlug: "unknown-service", Environment: "Prod",
+		Fingerprint: "grafana-unmapped-fingerprint", FingerprintVersion: "sha256-v1", Status: "FIRING",
+		Severity: "WARNING", Summary: "Unmapped alert", StartsAt: fixture.startedAt,
+		Labels: json.RawMessage(`{"alertname":"Unmapped"}`), Annotations: json.RawMessage(`{"summary":"Unmapped alert"}`),
+		RedactedPayload: json.RawMessage(`{"alerts":[]}`),
+	}
+	results, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, "unmapped-request-1")
+	if err != nil {
+		t.Fatalf("ingest unmapped alert: %v", err)
+	}
+	if len(results) != 1 || results[0].MatchState != "NEEDS_MAPPING" || results[0].InvestigationID != "" {
+		t.Fatalf("unmapped ingestion = %+v", results)
+	}
+	var incidentService sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT service_id::text FROM incidents WHERE id = $1`, results[0].IncidentID).Scan(&incidentService); err != nil {
+		t.Fatalf("read pending mapping incident: %v", err)
+	}
+	if incidentService.Valid {
+		t.Fatalf("pending incident has guessed service %q", incidentService.String)
+	}
+
+	valid := fixtureAlertInput(fixture, "batch-rollback-valid")
+	invalid := valid
+	invalid.ProjectSlug = "project-that-does-not-exist"
+	if _, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{valid, invalid}, "batch-rollback-request"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("batch with unresolved project error = %v, want ErrNotFound", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE fingerprint = $1`, valid.Fingerprint).Scan(&count); err != nil {
+		t.Fatalf("check batch rollback: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("alerts from failed batch = %d, want 0", count)
+	}
+}
+
+func fixtureAlertInput(fixture storeFixture, fingerprint string) GrafanaAlertInput {
+	return GrafanaAlertInput{
+		ProjectSlug: "grafana-unmapped", ServiceSlug: "checkout-api", Environment: "prod",
+		Fingerprint: fingerprint, FingerprintVersion: "sha256-v1", Status: "FIRING", Severity: "ERROR",
+		Summary: "Checkout alert", StartsAt: fixture.startedAt, Labels: json.RawMessage(`{"alertname":"Checkout"}`),
+		Annotations: json.RawMessage(`{"summary":"Checkout alert"}`), RedactedPayload: json.RawMessage(`{"alerts":[]}`),
+	}
+}
+
+func TestIngestGrafanaAlertDeduplicatesConcurrentFingerprints(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "grafana-concurrent")
+	repository := NewPostgres(db)
+	input := fixtureAlertInput(fixture, "concurrent-fingerprint")
+	input.ProjectSlug = "grafana-concurrent"
+
+	const writers = 8
+	var group sync.WaitGroup
+	errorsChannel := make(chan error, writers)
+	ids := make(chan string, writers)
+	for index := range writers {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			results, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, fmt.Sprintf("concurrent-request-%d", index))
+			if err != nil {
+				errorsChannel <- err
+				return
+			}
+			ids <- results[0].Alert.ID
+		}(index)
+	}
+	group.Wait()
+	close(errorsChannel)
+	close(ids)
+	for err := range errorsChannel {
+		t.Errorf("concurrent ingestion: %v", err)
+	}
+	var stableID string
+	for id := range ids {
+		if stableID == "" {
+			stableID = id
+		}
+		if id != stableID {
+			t.Errorf("concurrent alert ID = %s, want %s", id, stableID)
+		}
+	}
+	var alertCount, incidentCount, investigationCount, deliveryCount int
+	for query, target := range map[string]*int{
+		`SELECT count(*) FROM alerts WHERE fingerprint = 'concurrent-fingerprint'`:                               &alertCount,
+		`SELECT count(*) FROM incidents WHERE alert_id = $1`:                                                     &incidentCount,
+		`SELECT count(*) FROM investigations WHERE incident_id = (SELECT id FROM incidents WHERE alert_id = $1)`: &investigationCount,
+		`SELECT count(*) FROM alert_deliveries WHERE alert_id = $1`:                                              &deliveryCount,
+	} {
+		var err error
+		if strings.Contains(query, "$1") {
+			err = db.QueryRowContext(ctx, query, stableID).Scan(target)
+		} else {
+			err = db.QueryRowContext(ctx, query).Scan(target)
+		}
+		if err != nil {
+			t.Fatalf("count concurrent ingestion rows: %v", err)
+		}
+	}
+	if alertCount != 1 || incidentCount != 1 || investigationCount != 1 || deliveryCount != writers {
+		t.Fatalf("concurrent row counts alert/incident/investigation/delivery = %d/%d/%d/%d", alertCount, incidentCount, investigationCount, deliveryCount)
+	}
+}
+
+func TestRemapGrafanaAlertUsesVersionAndCreatesInvestigation(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "grafana-remap")
+	repository := NewPostgres(db)
+	input := fixtureAlertInput(fixture, "remap-fingerprint")
+	input.ProjectSlug = "grafana-remap"
+	input.ServiceSlug = "missing-service"
+	input.Environment = "bad Env"
+	created, err := repository.IngestGrafanaAlerts(ctx, []GrafanaAlertInput{input}, "remap-request-1")
+	if err != nil {
+		t.Fatalf("ingest unmapped alert: %v", err)
+	}
+	result, err := repository.RemapGrafanaAlert(ctx, created[0].Alert.ID, created[0].Alert.EventVersion, fixture.serviceID, "prod")
+	if err != nil {
+		t.Fatalf("remap Grafana alert: %v", err)
+	}
+	if result.MatchState != "MATCHED" || result.InvestigationID == "" || result.Alert.EventVersion != 2 {
+		t.Fatalf("remapped alert result = %+v", result)
+	}
+	if _, err := repository.RemapGrafanaAlert(ctx, result.Alert.ID, 1, fixture.serviceID, "prod"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale remap error = %v, want ErrConflict", err)
+	}
+}
+
 func TestCreateEventRejectsInvalidTimeWindows(t *testing.T) {
 	db := openStoreTestDB(t)
 	ctx := context.Background()

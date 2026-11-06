@@ -101,6 +101,9 @@ func runtimeKnownSecrets(cfg config.API) []string {
 	if cfg.DeploymentWebhookSecret.Reveal() != "" {
 		secrets = append(secrets, cfg.DeploymentWebhookSecret.Reveal())
 	}
+	if cfg.GrafanaWebhookSecret.Reveal() != "" {
+		secrets = append(secrets, cfg.GrafanaWebhookSecret.Reveal())
+	}
 	return secrets
 }
 
@@ -152,6 +155,8 @@ func newConfiguredHandlerWithAuditRecorderFactory(
 		AdminAuthenticator:      api.ManagementUnavailableAuthenticator{},
 		DeploymentWebhookSecret: cfg.DeploymentWebhookSecret,
 		DeploymentWebhookSource: cfg.DeploymentWebhookSource,
+		GrafanaWebhookSecret:    cfg.GrafanaWebhookSecret,
+		GrafanaAlerts:           repository,
 		ManagementActor:         cfg.ManagementActor,
 	}
 	if cfg.AdminToken.Reveal() != "" {
@@ -161,7 +166,7 @@ func newConfiguredHandlerWithAuditRecorderFactory(
 		}
 		dependencies.AdminAuthenticator = authenticator
 	}
-	if cfg.AdminToken.Reveal() != "" || cfg.DeploymentWebhookSecret.Reveal() != "" {
+	if cfg.AdminToken.Reveal() != "" || cfg.DeploymentWebhookSecret.Reveal() != "" || cfg.GrafanaWebhookSecret.Reveal() != "" {
 		recorder, recorderErr := newAuditRecorder(db, filter)
 		if recorderErr != nil {
 			return nil, recorderErr
