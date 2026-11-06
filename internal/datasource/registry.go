@@ -11,9 +11,15 @@ import (
 const (
 	DefaultQueryLimit     = 20
 	MaxQueryLimit         = 100
-	DefaultQueryMaxSeries = 100
-	MaxQueryMaxSeries     = 1000
+	DefaultQueryMaxSeries = 20
+	MaxQueryMaxSeries     = 100
+	DefaultQueryMaxPoints = 1000
+	MaxQueryMaxPoints     = 20000
+	MaxQueryTotalPoints   = 20000
 	MaxQueryWindow        = 6 * time.Hour
+	DefaultQueryStep      = 30 * time.Second
+	MinQueryStep          = 5 * time.Second
+	MaxQueryStep          = 5 * time.Minute
 )
 
 type Template struct {
@@ -26,24 +32,30 @@ type Template struct {
 }
 
 type QueryParameters struct {
-	Service   string
-	Start     string
-	End       string
-	Limit     int
-	Cursor    string
-	MaxSeries int
-	Extra     map[string]any
+	Service     string
+	Environment string
+	Start       string
+	End         string
+	Step        string
+	Limit       int
+	Cursor      string
+	MaxSeries   int
+	MaxPoints   int
+	Extra       map[string]any
 }
 
 type NormalizedQuery struct {
-	TemplateID string
-	Version    int
-	Service    string
-	Start      time.Time
-	End        time.Time
-	Limit      int
-	Cursor     string
-	MaxSeries  int
+	TemplateID  string
+	Version     int
+	Service     string
+	Environment string
+	Start       time.Time
+	End         time.Time
+	Step        time.Duration
+	Limit       int
+	Cursor      string
+	MaxSeries   int
+	MaxPoints   int
 }
 
 var commonParameters = []string{
@@ -53,6 +65,10 @@ var commonParameters = []string{
 	"max_series",
 	"service",
 	"start",
+}
+
+var prometheusParameters = []string{
+	"end", "environment", "max_points", "max_series", "service", "start", "step",
 }
 
 var templateRegistry = map[string]Template{
@@ -83,18 +99,38 @@ var templateRegistry = map[string]Template{
 	},
 	"prometheus.service.latency.v1": {
 		ID: "prometheus.service.latency.v1", Version: 1, Source: SourcePrometheus,
-		Purpose:      "Read bounded service latency series.",
-		ResultSchema: "metric.series.v1", AllowedParameters: commonParameters,
+		Purpose:      "Read bounded service P95 request latency series.",
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
+	},
+	"prometheus.service.error_ratio.v1": {
+		ID: "prometheus.service.error_ratio.v1", Version: 1, Source: SourcePrometheus,
+		Purpose:      "Read bounded service HTTP error ratio series.",
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
+	},
+	"prometheus.service.request_rate.v1": {
+		ID: "prometheus.service.request_rate.v1", Version: 1, Source: SourcePrometheus,
+		Purpose:      "Read bounded service request rate series.",
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
 	},
 	"prometheus.container.memory.v1": {
 		ID: "prometheus.container.memory.v1", Version: 1, Source: SourcePrometheus,
 		Purpose:      "Read bounded container memory series.",
-		ResultSchema: "metric.series.v1", AllowedParameters: commonParameters,
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
+	},
+	"prometheus.container.cpu.v1": {
+		ID: "prometheus.container.cpu.v1", Version: 1, Source: SourcePrometheus,
+		Purpose:      "Read bounded container CPU usage series.",
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
+	},
+	"prometheus.database.query_latency.v1": {
+		ID: "prometheus.database.query_latency.v1", Version: 1, Source: SourcePrometheus,
+		Purpose:      "Read bounded database query latency series.",
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
 	},
 	"prometheus.node.capacity.v1": {
 		ID: "prometheus.node.capacity.v1", Version: 1, Source: SourcePrometheus,
 		Purpose:      "Read bounded host capacity series.",
-		ResultSchema: "metric.series.v1", AllowedParameters: commonParameters,
+		ResultSchema: "metric.series.v1", AllowedParameters: prometheusParameters,
 	},
 	"loki.service.errors.v1": {
 		ID: "loki.service.errors.v1", Version: 1, Source: SourceLoki,
@@ -183,6 +219,12 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 			"service must be a lowercase service slug",
 		))
 	}
+	environment := strings.TrimSpace(parameters.Environment)
+	if template.Source == SourcePrometheus {
+		if !servicePattern.MatchString(environment) {
+			issues = append(issues, issue("parameters.environment", "required", "environment must be a lowercase environment slug"))
+		}
+	}
 	start, startOK := parseQueryTime(parameters.Start, "parameters.start", &issues)
 	end, endOK := parseQueryTime(parameters.End, "parameters.end", &issues)
 	if startOK && endOK {
@@ -215,7 +257,10 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 	}
 	maxSeries := parameters.MaxSeries
 	if maxSeries == 0 {
-		maxSeries = DefaultQueryMaxSeries
+		maxSeries = MaxQueryMaxSeries
+		if template.Source == SourcePrometheus {
+			maxSeries = DefaultQueryMaxSeries
+		}
 	}
 	if maxSeries < 1 || maxSeries > MaxQueryMaxSeries {
 		issues = append(issues, issue(
@@ -223,6 +268,30 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 			"out_of_range",
 			"maximum series count is outside the allowed range",
 		))
+	}
+	maxPoints := parameters.MaxPoints
+	step := time.Duration(0)
+	if template.Source == SourcePrometheus {
+		step = DefaultQueryStep
+		if parameters.Step != "" {
+			parsed, err := time.ParseDuration(strings.TrimSpace(parameters.Step))
+			if err != nil || parsed < MinQueryStep || parsed > MaxQueryStep || parsed%time.Second != 0 {
+				issues = append(issues, issue("parameters.step", "out_of_range", "step must be a whole-second duration from 5s through 5m"))
+			} else {
+				step = parsed
+			}
+		}
+		if maxPoints == 0 {
+			maxPoints = DefaultQueryMaxPoints
+		}
+		if maxPoints < 2 || maxPoints > MaxQueryMaxPoints {
+			issues = append(issues, issue("parameters.max_points", "out_of_range", "maximum points must be between 2 and the global limit"))
+		} else if startOK && endOK && end.After(start) && int(end.Sub(start)/step)+1 > maxPoints {
+			issues = append(issues, issue("parameters.max_points", "insufficient_budget", "time range and step exceed the requested per-series point budget"))
+		}
+		if maxSeries > 0 && maxPoints > 0 && maxSeries*maxPoints > MaxQueryTotalPoints {
+			issues = append(issues, issue("parameters.max_points", "total_sample_budget_exceeded", "series and point budgets exceed the total sample limit"))
+		}
 	}
 	cursor := strings.TrimSpace(parameters.Cursor)
 	if len(cursor) > 512 || strings.ContainsAny(cursor, "\x00\r\n") {
@@ -234,14 +303,10 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 	}
 
 	return NormalizedQuery{
-		TemplateID: template.ID,
-		Version:    template.Version,
-		Service:    service,
-		Start:      start.UTC(),
-		End:        end.UTC(),
-		Limit:      limit,
-		Cursor:     cursor,
-		MaxSeries:  maxSeries,
+		TemplateID: template.ID, Version: template.Version,
+		Service: service, Environment: environment,
+		Start: start.UTC(), End: end.UTC(), Step: step,
+		Limit: limit, Cursor: cursor, MaxSeries: maxSeries, MaxPoints: maxPoints,
 	}, issues
 }
 

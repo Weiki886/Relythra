@@ -248,6 +248,7 @@ func TestQueryEndpointRejectsRawPromQL(t *testing.T) {
 			"template_id":"prometheus.service.latency.v1",
 			"parameters":{
 				"service":"checkout-api",
+				"environment":"prod",
 				"start":"2026-11-04T05:00:00Z",
 				"end":"2026-11-04T06:00:00Z",
 				"promql":"up"
@@ -283,10 +284,11 @@ func TestQueryEndpointReturnsNormalizedFixedTemplatePlan(t *testing.T) {
 			"template_id":"prometheus.service.latency.v1",
 			"parameters":{
 				"service":"checkout-api",
+				"environment":"prod",
 				"start":"2026-11-04T05:00:00Z",
 				"end":"2026-11-04T06:00:00Z",
-				"limit":25,
-				"max_series":40
+				"max_series":40,
+				"max_points":200
 			}
 		}`,
 	)
@@ -298,8 +300,10 @@ func TestQueryEndpointReturnsNormalizedFixedTemplatePlan(t *testing.T) {
 	}
 	for _, expected := range []string{
 		`"template_id":"prometheus.service.latency.v1"`,
-		`"limit":25`,
 		`"max_series":40`,
+		`"environment":"prod"`,
+		`"step":30000000000`,
+		`"max_points":200`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("response missing %s: %s", expected, response.Body.String())
@@ -549,7 +553,7 @@ func validPrometheusMapping() store.DataSourceMapping {
 			Source:            datasource.SourcePrometheus,
 			Purpose:           "Read latency",
 			ResultSchema:      "metric.series.v1",
-			AllowedParameters: []string{"cursor", "end", "limit", "max_series", "service", "start"},
+			AllowedParameters: []string{"end", "environment", "max_points", "max_series", "service", "start", "step"},
 		}},
 		SecretRef: "env:MAPPING_SECRET_CANARY",
 		Version:   3,
