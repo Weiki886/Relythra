@@ -76,6 +76,194 @@ func TestCreateDeploymentEventIsIdempotentUnderConcurrency(t *testing.T) {
 	}
 }
 
+func TestClaimDeploymentWebhookSignatureIsAtomicAndRejectsReplay(t *testing.T) {
+	db := openStoreTestDB(t)
+	repository := NewPostgres(db)
+	digest := make([]byte, 32)
+	digest[0] = 42
+	expiresAt := time.Now().UTC().Add(5 * time.Minute)
+
+	const writers = 8
+	results := make(chan bool, writers)
+	var group sync.WaitGroup
+	for range writers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			claimed, err := repository.ClaimDeploymentWebhookSignature(context.Background(), digest, expiresAt)
+			if err != nil {
+				t.Errorf("claim signature: %v", err)
+				return
+			}
+			results <- claimed
+		}()
+	}
+	group.Wait()
+	close(results)
+
+	claimedCount := 0
+	for claimed := range results {
+		if claimed {
+			claimedCount++
+		}
+	}
+	if claimedCount != 1 {
+		t.Fatalf("successful claims = %d, want exactly 1", claimedCount)
+	}
+	claimed, err := repository.ClaimDeploymentWebhookSignature(context.Background(), digest, expiresAt)
+	if err != nil || claimed {
+		t.Fatalf("replayed claim = %v, %v; want false, nil", claimed, err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO deployment_webhook_signatures (signature_digest, expires_at)
+		VALUES ($1, now() - interval '2 minutes')
+	`, bytesOf(43)); err != nil {
+		t.Fatalf("insert expired signature fixture: %v", err)
+	}
+	if _, err := repository.ClaimDeploymentWebhookSignature(context.Background(), bytesOf(44), expiresAt); err != nil {
+		t.Fatalf("claim after expiry cleanup: %v", err)
+	}
+	var expiredCount int
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT count(*) FROM deployment_webhook_signatures WHERE signature_digest = $1
+	`, bytesOf(43)).Scan(&expiredCount); err != nil {
+		t.Fatalf("check expired signature cleanup: %v", err)
+	}
+	if expiredCount != 0 {
+		t.Fatalf("expired signature count = %d, want 0", expiredCount)
+	}
+}
+
+func bytesOf(value byte) []byte {
+	result := make([]byte, 32)
+	result[0] = value
+	return result
+}
+
+func TestCreateDeploymentEventRejectsIdempotencyKeyReuseWithDifferentFacts(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "deploy-idempotency-content")
+	repository := NewPostgres(db)
+	input := fixture.deploymentInput("external-deployment-100")
+	input.Status = "PENDING"
+	input.FinishedAt = nil
+	if _, created, err := repository.CreateDeploymentEvent(ctx, input); err != nil || !created {
+		t.Fatalf("create first deployment: created=%v err=%v", created, err)
+	}
+	input.CommitSHA = strings.Repeat("d", 40)
+	if _, _, err := repository.CreateDeploymentEvent(ctx, input); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused idempotency key error = %v, want ErrConflict", err)
+	}
+}
+
+func TestTransitionDeploymentEventIsVersionedAndAudited(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "deploy-transition")
+	repository := NewPostgres(db)
+	input := fixture.deploymentInput("external-deployment-101")
+	input.Status = "PENDING"
+	input.FinishedAt = nil
+	event, created, err := repository.CreateDeploymentEvent(ctx, input)
+	if err != nil || !created {
+		t.Fatalf("create deployment: created=%v err=%v", created, err)
+	}
+	if event.EventVersion != 1 {
+		t.Fatalf("initial event version = %d, want 1", event.EventVersion)
+	}
+	updated, err := repository.UpdateDeploymentEvent(ctx, event.ID, UpdateDeploymentEventInput{
+		ExpectedVersion: 1,
+		Actor:           "ci:checkout",
+		RequestID:       "req-deploy-101",
+		Reason:          "deployment started",
+		Status:          "IN_PROGRESS",
+	})
+	if err != nil {
+		t.Fatalf("transition to IN_PROGRESS: %v", err)
+	}
+	if updated.Status != "IN_PROGRESS" || updated.EventVersion != 2 {
+		t.Fatalf("updated event status/version = %s/%d", updated.Status, updated.EventVersion)
+	}
+	if _, err := repository.UpdateDeploymentEvent(ctx, event.ID, UpdateDeploymentEventInput{
+		ExpectedVersion: 1,
+		Actor:           "ci:checkout",
+		RequestID:       "req-deploy-101-stale",
+		Reason:          "stale duplicate",
+		Status:          "SUCCEEDED",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale transition error = %v, want ErrConflict", err)
+	}
+	if _, err := repository.UpdateDeploymentEvent(ctx, event.ID, UpdateDeploymentEventInput{
+		ExpectedVersion: 2,
+		Actor:           "ci:checkout",
+		RequestID:       "req-deploy-101-invalid",
+		Reason:          "invalid terminal jump",
+		Status:          "ROLLED_BACK",
+	}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("invalid transition error = %v, want ErrInvalidTransition", err)
+	}
+	corrected, err := repository.UpdateDeploymentEvent(ctx, event.ID, UpdateDeploymentEventInput{
+		ExpectedVersion: 2,
+		Actor:           "operator:local-admin",
+		RequestID:       "req-deploy-101-correction",
+		Reason:          "deployment record corrected from CI run metadata",
+		CommitSHA:       strings.Repeat("d", 40),
+		SourceReference: "https://ci.example.test/runs/101",
+	})
+	if err != nil {
+		t.Fatalf("correct deployment facts: %v", err)
+	}
+	if corrected.EventVersion != 3 || corrected.SourceConsistency != "SOURCE_CONFLICT" ||
+		!strings.Contains(string(corrected.SourceConflicts), "commit_sha") {
+		t.Fatalf("corrected deployment consistency = %d/%s/%s", corrected.EventVersion, corrected.SourceConsistency, corrected.SourceConflicts)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM deployment_event_updates WHERE deployment_event_id = $1
+	`, event.ID).Scan(&count); err != nil {
+		t.Fatalf("count deployment event updates: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("deployment update audit count = %d, want create, transition, and correction", count)
+	}
+}
+
+func TestFindDeploymentCandidatesReturnsAllOverlappingDeployments(t *testing.T) {
+	db := openStoreTestDB(t)
+	ctx := context.Background()
+	fixture := insertStoreFixture(t, ctx, db, "deploy-candidates")
+	repository := NewPostgres(db)
+	starts := []time.Time{
+		fixture.startedAt.Add(-5 * time.Minute),
+		fixture.startedAt.Add(5 * time.Minute),
+		fixture.startedAt.Add(time.Hour),
+	}
+	for index, key := range []string{"candidate-window-1", "candidate-window-2", "candidate-outside"} {
+		input := fixture.deploymentInput(key)
+		input.StartedAt = starts[index]
+		input.FinishedAt = pointerTo(input.StartedAt.Add(10 * time.Minute))
+		input.Status = "SUCCEEDED"
+		if _, _, err := repository.CreateDeploymentEvent(ctx, input); err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+	}
+	candidates, err := repository.FindDeploymentCandidates(ctx, DeploymentCandidateQuery{
+		ProjectID:   fixture.projectID,
+		ServiceID:   fixture.serviceID,
+		Environment: "prod",
+		Start:       fixture.startedAt.Add(-5 * time.Minute),
+		End:         fixture.startedAt.Add(30 * time.Minute),
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("find deployment candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidate count = %d, want both overlapping deployments", len(candidates))
+	}
+}
+
 func TestCreateAlertReusesFingerprintWindow(t *testing.T) {
 	db := openStoreTestDB(t)
 	ctx := context.Background()

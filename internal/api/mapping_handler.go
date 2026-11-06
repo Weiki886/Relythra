@@ -52,12 +52,23 @@ type ConnectionTester interface {
 	Test(context.Context, health.Target) (health.Result, error)
 }
 
+type DeploymentRepository interface {
+	ClaimDeploymentWebhookSignature(context.Context, []byte, time.Time) (bool, error)
+	CreateDeploymentEvent(context.Context, store.CreateDeploymentEventInput) (store.DeploymentEvent, bool, error)
+	UpdateDeploymentEvent(context.Context, string, store.UpdateDeploymentEventInput) (store.DeploymentEvent, error)
+	FindDeploymentCandidates(context.Context, store.DeploymentCandidateQuery) ([]store.DeploymentEvent, error)
+}
+
 type Dependencies struct {
-	Reader             Reader
-	Mappings           MappingRepository
-	AdminAuthenticator AdminAuthenticator
-	ConnectionTester   ConnectionTester
-	AuditRecorder      audit.Recorder
+	Reader                  Reader
+	Mappings                MappingRepository
+	Deployments             DeploymentRepository
+	AdminAuthenticator      AdminAuthenticator
+	ConnectionTester        ConnectionTester
+	AuditRecorder           audit.Recorder
+	DeploymentWebhookSecret secrets.Secret
+	DeploymentWebhookSource string
+	ManagementActor         string
 }
 
 type mappingWriteRequest struct {
@@ -793,6 +804,8 @@ type managementAuditState struct {
 	SourceType string
 	TemplateID string
 	ObjectID   string
+	ObjectType string
+	Action     audit.Action
 	Result     audit.Result
 	ErrorCode  string
 	SkipFinal  bool
@@ -908,6 +921,9 @@ type multiReadCloser struct {
 }
 
 func managementAuditAction(r *http.Request) audit.Action {
+	if state := managementAuditStateFromContext(r); state != nil && state.Action != "" {
+		return state.Action
+	}
 	switch r.PathValue("action") {
 	case "queries":
 		return audit.ActionToolCalled
@@ -977,16 +993,25 @@ func (handler *handler) newManagementAuditEvent(
 	if objectID == "" {
 		objectID = managementObjectID(r)
 	}
+	objectType := state.ObjectType
+	if objectType == "" {
+		objectType = "data_source_mapping"
+	}
 	return audit.Event{
 		Actor:      "management-token",
 		Action:     action,
-		ObjectType: "data_source_mapping",
+		ObjectType: objectType,
 		ObjectID:   objectID,
 		Result:     result,
 		RequestID:  RequestIDFromContext(r.Context()),
 		Parameters: parameters,
 		OccurredAt: time.Now().UTC(),
 	}
+}
+
+func managementAuditStateFromContext(r *http.Request) *managementAuditState {
+	state, _ := r.Context().Value(managementAuditContextKey{}).(*managementAuditState)
+	return state
 }
 
 func (handler *handler) recordDeniedManagementAttempt(

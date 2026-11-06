@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Weiki886/relythra/internal/domain"
@@ -27,6 +28,7 @@ type CreateDeploymentEventInput struct {
 	Environment     string
 	SourceSystem    string
 	IdempotencyKey  string
+	RequestID       string
 	Status          string
 	StartedAt       time.Time
 	FinishedAt      *time.Time
@@ -41,24 +43,54 @@ type CreateDeploymentEventInput struct {
 }
 
 type DeploymentEvent struct {
-	ID              string          `json:"id"`
-	ProjectID       string          `json:"project_id"`
-	ServiceID       string          `json:"service_id"`
-	ReleaseID       string          `json:"release_id"`
-	Environment     string          `json:"environment"`
-	SourceSystem    string          `json:"source_system"`
-	IdempotencyKey  string          `json:"idempotency_key"`
-	Status          string          `json:"status"`
-	StartedAt       time.Time       `json:"started_at"`
-	FinishedAt      *time.Time      `json:"finished_at"`
-	Version         string          `json:"version"`
-	CommitSHA       string          `json:"commit_sha"`
-	ImageDigest     string          `json:"image_digest"`
-	InstanceCount   int             `json:"instance_count"`
-	SourceReference string          `json:"source_reference"`
-	SourceTimezone  string          `json:"source_timezone"`
-	SourceTimeText  string          `json:"source_time_text"`
-	Metadata        json.RawMessage `json:"metadata"`
+	ID                string          `json:"id"`
+	ProjectID         string          `json:"project_id"`
+	ServiceID         string          `json:"service_id"`
+	ReleaseID         string          `json:"release_id"`
+	Environment       string          `json:"environment"`
+	SourceSystem      string          `json:"source_system"`
+	IdempotencyKey    string          `json:"idempotency_key"`
+	Status            string          `json:"status"`
+	StartedAt         time.Time       `json:"started_at"`
+	FinishedAt        *time.Time      `json:"finished_at"`
+	Version           string          `json:"version"`
+	CommitSHA         string          `json:"commit_sha"`
+	ImageDigest       string          `json:"image_digest"`
+	InstanceCount     int             `json:"instance_count"`
+	SourceReference   string          `json:"source_reference"`
+	SourceTimezone    string          `json:"source_timezone"`
+	SourceTimeText    string          `json:"source_time_text"`
+	Metadata          json.RawMessage `json:"metadata"`
+	EventVersion      int64           `json:"event_version"`
+	SourceConsistency string          `json:"source_consistency"`
+	SourceConflicts   json.RawMessage `json:"source_conflicts"`
+}
+
+func (repository *Postgres) ClaimDeploymentWebhookSignature(
+	ctx context.Context,
+	digest []byte,
+	expiresAt time.Time,
+) (bool, error) {
+	if len(digest) != 32 || expiresAt.IsZero() {
+		return false, ErrInvalidInput
+	}
+	if _, err := repository.db.ExecContext(ctx, `
+		DELETE FROM deployment_webhook_signatures WHERE expires_at < now() - interval '1 minute'
+	`); err != nil {
+		return false, fmt.Errorf("prune expired deployment webhook signatures: %w", err)
+	}
+	var claimed bool
+	if err := repository.db.QueryRowContext(ctx, `
+		INSERT INTO deployment_webhook_signatures (signature_digest, expires_at)
+		VALUES ($1, $2)
+		ON CONFLICT (signature_digest) DO NOTHING
+		RETURNING true
+	`, digest, expiresAt.UTC()).Scan(&claimed); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("claim deployment webhook signature: %w", err)
+	}
+	return claimed, nil
 }
 
 func (repository *Postgres) CreateDeploymentEvent(
@@ -86,15 +118,46 @@ func (repository *Postgres) CreateDeploymentEvent(
 		_ = tx.Rollback()
 	}()
 
+	var releaseVersion, releaseCommit, releaseDigest string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT version, commit_sha, COALESCE(image_digest, '')
+		FROM releases
+		WHERE id = $1 AND service_id = $2 AND project_id = $3
+	`, input.ReleaseID, input.ServiceID, input.ProjectID).Scan(&releaseVersion, &releaseCommit, &releaseDigest); errors.Is(err, sql.ErrNoRows) {
+		return DeploymentEvent{}, false, ErrInvalidInput
+	} else if err != nil {
+		return DeploymentEvent{}, false, fmt.Errorf("validate deployment release: %w", err)
+	}
+	conflicts := make([]string, 0, 3)
+	if input.Version != releaseVersion {
+		conflicts = append(conflicts, "version")
+	}
+	if input.CommitSHA != releaseCommit {
+		conflicts = append(conflicts, "commit_sha")
+	}
+	if input.ImageDigest != "" && releaseDigest != "" && input.ImageDigest != releaseDigest {
+		conflicts = append(conflicts, "image_digest")
+	}
+	conflictJSON, err := json.Marshal(conflicts)
+	if err != nil {
+		return DeploymentEvent{}, false, fmt.Errorf("encode deployment source conflicts: %w", err)
+	}
+	consistency := "MATCHED"
+	if len(conflicts) > 0 {
+		consistency = "SOURCE_CONFLICT"
+	} else if input.ImageDigest == "" || releaseDigest == "" {
+		consistency = "UNVERIFIED"
+	}
+
 	const insert = `
 		INSERT INTO deployment_events (
 			project_id, service_id, release_id, environment, source_system,
 			idempotency_key, status, started_at, finished_at, version, commit_sha,
 			image_digest, instance_count, source_reference, source_timezone,
-			source_time_text, metadata
+			source_time_text, metadata, source_consistency, source_conflicts
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			NULLIF($15, ''), NULLIF($16, ''), $17::jsonb
+			NULLIF($15, ''), NULLIF($16, ''), $17::jsonb, $18, $19::jsonb
 		)
 		ON CONFLICT (service_id, environment, source_system, idempotency_key)
 		DO NOTHING
@@ -120,6 +183,8 @@ func (repository *Postgres) CreateDeploymentEvent(
 		input.SourceTimezone,
 		input.SourceTimeText,
 		string(metadata),
+		consistency,
+		string(conflictJSON),
 	))
 	created := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -140,11 +205,274 @@ func (repository *Postgres) CreateDeploymentEvent(
 		if err != nil {
 			return DeploymentEvent{}, false, fmt.Errorf("read existing deployment event: %w", err)
 		}
+		if event.ReleaseID != input.ReleaseID || event.Version != input.Version || event.CommitSHA != input.CommitSHA || event.ImageDigest != input.ImageDigest || !event.StartedAt.Equal(domain.NormalizeTime(input.StartedAt)) {
+			return DeploymentEvent{}, false, ErrConflict
+		}
+	}
+	if created {
+		requestID := input.RequestID
+		if requestID == "" {
+			requestID = input.IdempotencyKey
+		}
+		actor := input.SourceSystem
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO deployment_event_updates (
+				deployment_event_id, event_version, actor, request_id, action,
+				reason, before_state, after_state, occurred_at
+			) VALUES ($1, 1, $2, $3, 'CREATED', 'deployment event received', '{}'::jsonb, $4::jsonb, now())
+		`, event.ID, actor, requestID, deploymentStateJSON(event)); err != nil {
+			return DeploymentEvent{}, false, fmt.Errorf("record deployment event creation: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return DeploymentEvent{}, false, fmt.Errorf("commit deployment event transaction: %w", err)
 	}
 	return event, created, nil
+}
+
+type UpdateDeploymentEventInput struct {
+	ExpectedVersion int64
+	Actor           string
+	RequestID       string
+	Reason          string
+	Status          string
+	FinishedAt      *time.Time
+	ReleaseID       string
+	Version         string
+	CommitSHA       string
+	ImageDigest     string
+	InstanceCount   int
+	StartedAt       *time.Time
+	SourceReference string
+}
+
+func (repository *Postgres) UpdateDeploymentEvent(
+	ctx context.Context,
+	id string,
+	input UpdateDeploymentEventInput,
+) (DeploymentEvent, error) {
+	if !domain.IsID(id) || input.ExpectedVersion < 1 || strings.TrimSpace(input.Actor) == "" ||
+		strings.TrimSpace(input.RequestID) == "" || strings.TrimSpace(input.Reason) == "" {
+		return DeploymentEvent{}, fmt.Errorf("%w: invalid deployment update", ErrInvalidInput)
+	}
+
+	tx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DeploymentEvent{}, fmt.Errorf("begin deployment update transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	current, err := scanDeploymentEvent(tx.QueryRowContext(ctx, `
+		SELECT `+deploymentColumns+`
+		FROM deployment_events
+		WHERE id = $1
+		FOR UPDATE
+	`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeploymentEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return DeploymentEvent{}, fmt.Errorf("read deployment event for update: %w", err)
+	}
+	if current.EventVersion != input.ExpectedVersion {
+		return DeploymentEvent{}, ErrConflict
+	}
+	status := current.Status
+	if input.Status != "" {
+		status = input.Status
+	}
+	if status != current.Status {
+		state := domain.DeploymentEvent{Status: domain.DeploymentStatus(current.Status)}
+		if err := state.Transition(domain.DeploymentStatus(status)); err != nil {
+			return DeploymentEvent{}, fmt.Errorf("%w: %v", ErrInvalidTransition, err)
+		}
+	}
+	finishedAt := current.FinishedAt
+	if input.FinishedAt != nil {
+		finishedAt = input.FinishedAt
+	}
+	if terminalDeploymentStatus(status) && finishedAt == nil {
+		return DeploymentEvent{}, fmt.Errorf("%w: finished_at is required for terminal deployment status", ErrInvalidInput)
+	}
+	startedAt := current.StartedAt
+	if input.StartedAt != nil {
+		startedAt = *input.StartedAt
+	}
+	if finishedAt != nil && finishedAt.Before(startedAt) {
+		return DeploymentEvent{}, fmt.Errorf("%w: finished_at precedes started_at", ErrInvalidInput)
+	}
+	releaseID := current.ReleaseID
+	if input.ReleaseID != "" {
+		releaseID = input.ReleaseID
+	}
+	version := current.Version
+	if input.Version != "" {
+		version = input.Version
+	}
+	commitSHA := current.CommitSHA
+	if input.CommitSHA != "" {
+		commitSHA = input.CommitSHA
+	}
+	imageDigest := current.ImageDigest
+	if input.ImageDigest != "" {
+		imageDigest = input.ImageDigest
+	}
+	instanceCount := current.InstanceCount
+	if input.InstanceCount != 0 {
+		instanceCount = input.InstanceCount
+	}
+	sourceReference := current.SourceReference
+	if input.SourceReference != "" {
+		sourceReference = input.SourceReference
+	}
+	if !domain.IsID(releaseID) || strings.TrimSpace(version) == "" || strings.TrimSpace(commitSHA) == "" || instanceCount < 1 {
+		return DeploymentEvent{}, fmt.Errorf("%w: corrected deployment facts are invalid", ErrInvalidInput)
+	}
+	var releaseVersion, releaseCommit, releaseDigest string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT version, commit_sha, COALESCE(image_digest, '')
+		FROM releases
+		WHERE id = $1 AND service_id = $2 AND project_id = $3
+	`, releaseID, current.ServiceID, current.ProjectID).Scan(&releaseVersion, &releaseCommit, &releaseDigest); errors.Is(err, sql.ErrNoRows) {
+		return DeploymentEvent{}, ErrInvalidInput
+	} else if err != nil {
+		return DeploymentEvent{}, fmt.Errorf("validate corrected deployment release: %w", err)
+	}
+	conflicts := make([]string, 0, 3)
+	if version != releaseVersion {
+		conflicts = append(conflicts, "version")
+	}
+	if commitSHA != releaseCommit {
+		conflicts = append(conflicts, "commit_sha")
+	}
+	if imageDigest != "" && releaseDigest != "" && imageDigest != releaseDigest {
+		conflicts = append(conflicts, "image_digest")
+	}
+	conflictJSON, err := json.Marshal(conflicts)
+	if err != nil {
+		return DeploymentEvent{}, fmt.Errorf("encode corrected deployment conflicts: %w", err)
+	}
+	consistency := "MATCHED"
+	if len(conflicts) > 0 {
+		consistency = "SOURCE_CONFLICT"
+	} else if imageDigest == "" || releaseDigest == "" {
+		consistency = "UNVERIFIED"
+	}
+
+	corrected := status == current.Status &&
+		!startedAt.Equal(current.StartedAt) || releaseID != current.ReleaseID || version != current.Version ||
+		commitSHA != current.CommitSHA || imageDigest != current.ImageDigest || instanceCount != current.InstanceCount ||
+		sourceReference != current.SourceReference
+	finishedChanged := (finishedAt == nil) != (current.FinishedAt == nil) ||
+		(finishedAt != nil && current.FinishedAt != nil && !finishedAt.Equal(*current.FinishedAt))
+	if status == current.Status && !corrected && !finishedChanged {
+		if err := tx.Commit(); err != nil {
+			return DeploymentEvent{}, fmt.Errorf("commit unchanged deployment event: %w", err)
+		}
+		return current, nil
+	}
+	before := deploymentStateJSON(current)
+	updated, err := scanDeploymentEvent(tx.QueryRowContext(ctx, `
+		UPDATE deployment_events
+		SET status = $2, started_at = $3, finished_at = $4, release_id = $5,
+		    version = $6, commit_sha = $7, image_digest = NULLIF($8, ''),
+		    instance_count = $9, source_reference = $10, event_version = event_version + 1,
+		    source_consistency = $11, source_conflicts = $12::jsonb
+		WHERE id = $1
+		RETURNING `+deploymentColumns,
+		id, status, domain.NormalizeTime(startedAt), normalizeOptionalTime(finishedAt), releaseID,
+		version, commitSHA, imageDigest, instanceCount, sourceReference, consistency, string(conflictJSON)))
+	if err != nil {
+		return DeploymentEvent{}, fmt.Errorf("update deployment event: %w", err)
+	}
+	action := "UPDATED"
+	if corrected {
+		action = "CORRECTED"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO deployment_event_updates (
+			deployment_event_id, event_version, actor, request_id, action,
+			reason, before_state, after_state, occurred_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now())
+	`, id, updated.EventVersion, input.Actor, input.RequestID, action, input.Reason, string(before), string(deploymentStateJSON(updated))); err != nil {
+		return DeploymentEvent{}, fmt.Errorf("record deployment event update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DeploymentEvent{}, fmt.Errorf("commit deployment event update: %w", err)
+	}
+	return updated, nil
+}
+
+type DeploymentCandidateQuery struct {
+	ProjectID   string
+	ServiceID   string
+	Environment string
+	Start       time.Time
+	End         time.Time
+	Limit       int
+}
+
+func (repository *Postgres) FindDeploymentCandidates(
+	ctx context.Context,
+	query DeploymentCandidateQuery,
+) ([]DeploymentEvent, error) {
+	if !domain.IsID(query.ProjectID) || !domain.IsID(query.ServiceID) || query.Environment == "" ||
+		query.Limit < 1 || query.Limit > 100 {
+		return nil, fmt.Errorf("%w: invalid deployment candidate query", ErrInvalidInput)
+	}
+	if err := domain.ValidateTimeRange(query.Start, query.End); err != nil {
+		return nil, fmt.Errorf("%w: invalid deployment candidate time window", ErrInvalidInput)
+	}
+	if query.End.Sub(query.Start) > 24*time.Hour {
+		return nil, fmt.Errorf("%w: deployment candidate window exceeds 24 hours", ErrInvalidInput)
+	}
+	rows, err := repository.db.QueryContext(ctx, `
+		SELECT `+deploymentColumns+`
+		FROM deployment_events
+		WHERE project_id = $1 AND service_id = $2 AND environment = $3
+		  AND started_at <= $5
+		  AND COALESCE(finished_at, started_at) >= $4
+		ORDER BY started_at, id
+		LIMIT $6
+	`, query.ProjectID, query.ServiceID, query.Environment, domain.NormalizeTime(query.Start), domain.NormalizeTime(query.End), query.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("query deployment candidates: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]DeploymentEvent, 0)
+	for rows.Next() {
+		candidate, scanErr := scanDeploymentEvent(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan deployment candidate: %w", scanErr)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deployment candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func terminalDeploymentStatus(status string) bool {
+	switch status {
+	case string(domain.DeploymentSucceeded), string(domain.DeploymentFailed), string(domain.DeploymentRolledBack):
+		return true
+	default:
+		return false
+	}
+}
+
+func deploymentStateJSON(event DeploymentEvent) json.RawMessage {
+	state, _ := json.Marshal(map[string]any{
+		"status": event.Status, "event_version": event.EventVersion,
+		"started_at": event.StartedAt, "finished_at": event.FinishedAt,
+		"release_id": event.ReleaseID,
+		"version":    event.Version, "commit_sha": event.CommitSHA,
+		"image_digest": event.ImageDigest, "instance_count": event.InstanceCount,
+		"source_reference":   event.SourceReference,
+		"source_consistency": event.SourceConsistency, "source_conflicts": event.SourceConflicts,
+	})
+	return state
 }
 
 type CreateAlertInput struct {
@@ -604,7 +932,10 @@ const deploymentColumns = `
 	source_reference,
 	COALESCE(source_timezone, ''),
 	COALESCE(source_time_text, ''),
-	metadata::text
+	metadata::text,
+	event_version,
+	source_consistency,
+	source_conflicts::text
 `
 
 func prefixedDeploymentColumns(prefix string) string {
@@ -625,7 +956,10 @@ func prefixedDeploymentColumns(prefix string) string {
 		prefix + ".source_reference, " +
 		"COALESCE(" + prefix + ".source_timezone, ''), " +
 		"COALESCE(" + prefix + ".source_time_text, ''), " +
-		prefix + ".metadata::text"
+		prefix + ".metadata::text, " +
+		prefix + ".event_version, " +
+		prefix + ".source_consistency, " +
+		prefix + ".source_conflicts::text"
 }
 
 type scanner interface {
@@ -636,6 +970,7 @@ func scanDeploymentEvent(row scanner) (DeploymentEvent, error) {
 	var deployment DeploymentEvent
 	var finishedAt sql.NullTime
 	var metadata string
+	var sourceConflicts string
 	err := row.Scan(
 		&deployment.ID,
 		&deployment.ProjectID,
@@ -655,12 +990,16 @@ func scanDeploymentEvent(row scanner) (DeploymentEvent, error) {
 		&deployment.SourceTimezone,
 		&deployment.SourceTimeText,
 		&metadata,
+		&deployment.EventVersion,
+		&deployment.SourceConsistency,
+		&sourceConflicts,
 	)
 	if err != nil {
 		return DeploymentEvent{}, err
 	}
 	deployment.FinishedAt = nullTimePointer(finishedAt)
 	deployment.Metadata = json.RawMessage(metadata)
+	deployment.SourceConflicts = json.RawMessage(sourceConflicts)
 	return deployment, nil
 }
 

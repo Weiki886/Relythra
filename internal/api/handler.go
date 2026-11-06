@@ -19,13 +19,17 @@ type Reader interface {
 }
 
 type handler struct {
-	reader             Reader
-	mappings           MappingRepository
-	adminAuthenticator AdminAuthenticator
-	connectionTester   ConnectionTester
-	auditRecorder      audit.Recorder
-	logger             *slog.Logger
-	filter             *redact.Filter
+	reader                  Reader
+	mappings                MappingRepository
+	deployments             DeploymentRepository
+	adminAuthenticator      AdminAuthenticator
+	connectionTester        ConnectionTester
+	auditRecorder           audit.Recorder
+	deploymentWebhookSecret string
+	deploymentWebhookSource string
+	managementActor         string
+	logger                  *slog.Logger
+	filter                  *redact.Filter
 }
 
 func NewHandler(reader Reader, logger *slog.Logger, filters ...*redact.Filter) http.Handler {
@@ -54,19 +58,30 @@ func NewHandlerWithDependencies(
 	if dependencies.AdminAuthenticator == nil {
 		dependencies.AdminAuthenticator = ManagementUnavailableAuthenticator{}
 	}
+	if dependencies.ManagementActor == "" {
+		dependencies.ManagementActor = "management-token"
+	}
 	apiHandler := &handler{
-		reader:             dependencies.Reader,
-		mappings:           dependencies.Mappings,
-		adminAuthenticator: dependencies.AdminAuthenticator,
-		connectionTester:   dependencies.ConnectionTester,
-		auditRecorder:      dependencies.AuditRecorder,
-		logger:             logger,
-		filter:             filter,
+		reader:                  dependencies.Reader,
+		mappings:                dependencies.Mappings,
+		deployments:             dependencies.Deployments,
+		adminAuthenticator:      dependencies.AdminAuthenticator,
+		connectionTester:        dependencies.ConnectionTester,
+		auditRecorder:           dependencies.AuditRecorder,
+		deploymentWebhookSecret: dependencies.DeploymentWebhookSecret.Reveal(),
+		deploymentWebhookSource: dependencies.DeploymentWebhookSource,
+		managementActor:         dependencies.ManagementActor,
+		logger:                  logger,
+		filter:                  filter,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/{id}", apiHandler.getReport)
 	mux.HandleFunc("/api/v1/evidence/{id}", apiHandler.getEvidence)
 	mux.HandleFunc("/api/v1/deployments/{id}", apiHandler.getDeployment)
+	mux.HandleFunc("/api/v1/deployment-events/webhook", apiHandler.receiveDeploymentWebhook)
+	mux.HandleFunc("/api/v1/deployment-events", apiHandler.manageDeploymentCollection)
+	mux.HandleFunc("/api/v1/deployment-events/candidates", apiHandler.getDeploymentCandidates)
+	mux.HandleFunc("/api/v1/deployment-events/{id}", apiHandler.manageDeploymentItem)
 	mux.HandleFunc("/api/v1/data-source-mappings", apiHandler.manageMappingCollection)
 	mux.HandleFunc("/api/v1/data-source-mappings/{id}", apiHandler.manageMappingItem)
 	mux.HandleFunc("/api/v1/data-source-mappings/{id}/{action}", apiHandler.manageMappingAction)
@@ -142,6 +157,8 @@ func (handler *handler) writeStoreError(w http.ResponseWriter, r *http.Request, 
 		writeError(w, r, http.StatusNotFound, "not_found", "resource was not found")
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, r, http.StatusConflict, "conflict", "resource changed; retry the request")
+	case errors.Is(err, store.ErrInvalidTransition):
+		writeError(w, r, http.StatusConflict, "invalid_transition", "deployment state transition is invalid")
 	default:
 		safeError, redactErr := handler.filter.Text(r.Context(), err.Error())
 		if redactErr != nil {

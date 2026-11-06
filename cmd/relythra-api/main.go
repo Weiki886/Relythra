@@ -98,6 +98,9 @@ func runtimeKnownSecrets(cfg config.API) []string {
 	if cfg.AdminToken.Reveal() != "" {
 		secrets = append(secrets, cfg.AdminToken.Reveal())
 	}
+	if cfg.DeploymentWebhookSecret.Reveal() != "" {
+		secrets = append(secrets, cfg.DeploymentWebhookSecret.Reveal())
+	}
 	return secrets
 }
 
@@ -144,14 +147,28 @@ func newConfiguredHandlerWithAuditRecorderFactory(
 	}
 	repository := store.NewPostgres(db)
 	dependencies := api.Dependencies{
-		Reader:             repository,
-		AdminAuthenticator: api.ManagementUnavailableAuthenticator{},
+		Reader:                  repository,
+		Deployments:             repository,
+		AdminAuthenticator:      api.ManagementUnavailableAuthenticator{},
+		DeploymentWebhookSecret: cfg.DeploymentWebhookSecret,
+		DeploymentWebhookSource: cfg.DeploymentWebhookSource,
+		ManagementActor:         cfg.ManagementActor,
 	}
-	if cfg.AdminToken.Reveal() != "" && len(cfg.DataSourcePolicy.AllowedHosts) > 0 {
+	if cfg.AdminToken.Reveal() != "" {
 		authenticator, authErr := api.NewBearerTokenAuthenticator(cfg.AdminToken)
 		if authErr != nil {
 			return nil, authErr
 		}
+		dependencies.AdminAuthenticator = authenticator
+	}
+	if cfg.AdminToken.Reveal() != "" || cfg.DeploymentWebhookSecret.Reveal() != "" {
+		recorder, recorderErr := newAuditRecorder(db, filter)
+		if recorderErr != nil {
+			return nil, recorderErr
+		}
+		dependencies.AuditRecorder = recorder
+	}
+	if len(cfg.DataSourcePolicy.AllowedHosts) > 0 {
 		policy, policyErr := outbound.NewPolicy(cfg.DataSourcePolicy)
 		if policyErr != nil {
 			return nil, policyErr
@@ -160,14 +177,8 @@ func newConfiguredHandlerWithAuditRecorderFactory(
 		if testerErr != nil {
 			return nil, testerErr
 		}
-		recorder, recorderErr := newAuditRecorder(db, filter)
-		if recorderErr != nil {
-			return nil, recorderErr
-		}
 		dependencies.Mappings = repository
-		dependencies.AdminAuthenticator = authenticator
 		dependencies.ConnectionTester = tester
-		dependencies.AuditRecorder = recorder
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/health/", health.NewHandler(db, logger))
