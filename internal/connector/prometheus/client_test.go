@@ -91,6 +91,61 @@ func TestQuerySupportsOnlyRegisteredPrometheusTemplates(t *testing.T) {
 	}
 }
 
+func TestRegisteredTemplatesBuildExpectedPromQLAndUnits(t *testing.T) {
+	tests := []struct {
+		templateID string
+		query      string
+		unit       string
+	}{
+		{
+			templateID: "prometheus.service.latency.v1",
+			query:      `histogram_quantile(0.95, sum by (le, route) (rate(demo_http_request_duration_seconds_bucket{service="checkout-api",env="prod"}[5m])))`,
+			unit:       "seconds",
+		},
+		{
+			templateID: "prometheus.service.error_ratio.v1",
+			query:      `sum by (route) (rate(demo_http_requests_total{service="checkout-api",env="prod",status=~"5.."}[5m])) / clamp_min(sum by (route) (rate(demo_http_requests_total{service="checkout-api",env="prod"}[5m])), 1e-12)`,
+			unit:       "ratio",
+		},
+		{
+			templateID: "prometheus.service.request_rate.v1",
+			query:      `sum by (route) (rate(demo_http_requests_total{service="checkout-api",env="prod"}[5m]))`,
+			unit:       "requests_per_second",
+		},
+		{
+			templateID: "prometheus.container.cpu.v1",
+			query:      `sum by (container) (rate(container_cpu_usage_seconds_total{service="checkout-api",env="prod"}[5m]))`,
+			unit:       "cores",
+		},
+		{
+			templateID: "prometheus.container.memory.v1",
+			query:      `sum by (container) (container_memory_working_set_bytes{service="checkout-api",env="prod"})`,
+			unit:       "bytes",
+		},
+		{
+			templateID: "prometheus.database.query_latency.v1",
+			query:      `histogram_quantile(0.95, sum by (le, operation) (rate(db_client_query_duration_seconds_bucket{service="checkout-api",env="prod"}[5m])))`,
+			unit:       "seconds",
+		},
+		{
+			templateID: "prometheus.node.capacity.v1",
+			query:      `node_memory_MemAvailable_bytes{service="checkout-api",env="prod"}`,
+			unit:       "bytes",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.templateID, func(t *testing.T) {
+			query, unit, err := buildExpression(validQuery(testCase.templateID))
+			if err != nil {
+				t.Fatalf("buildExpression: %v", err)
+			}
+			if query != testCase.query || unit != testCase.unit {
+				t.Fatalf("expression = %q (%s), want %q (%s)", query, unit, testCase.query, testCase.unit)
+			}
+		})
+	}
+}
+
 func TestInstantQueryUsesFixedTemplateAndParsesVectorResponse(t *testing.T) {
 	const instant = `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"service":"checkout-api","env":"prod","route":"/orders"},"value":[1793772300,"12.5"]}]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -181,6 +236,29 @@ func TestQueryRejectsResponseOverBudgetAndHTTPThrottle(t *testing.T) {
 		_, err := newTestConnector(t, server, nil).Query(context.Background(), Target{Endpoint: server.URL}, validQuery("prometheus.service.request_rate.v1"))
 		if !IsErrorCategory(err, ErrorRateLimited) {
 			t.Fatalf("error = %v, want rate limited", err)
+		}
+	})
+
+	t.Run("too many points in one series", func(t *testing.T) {
+		body := `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"service":"checkout-api","env":"prod"},"values":[[1793772000,"1"],[1793772030,"2"],[1793772060,"3"]]}]}}`
+		server, _ := newCountingServer(t, body)
+		query := validQuery("prometheus.service.request_rate.v1")
+		query.End = query.Start.Add(30 * time.Second)
+		query.MaxPoints = 2
+		result, err := newTestConnector(t, server, nil).Query(context.Background(), Target{Endpoint: server.URL}, query)
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(result.Series) != 1 || len(result.Series[0].Samples) != 2 || !result.Partial {
+			t.Fatalf("point limit result = %+v", result)
+		}
+	})
+
+	t.Run("response byte limit", func(t *testing.T) {
+		server, _ := newCountingServer(t, strings.Repeat("x", MaxResponseBytes+1))
+		_, err := newTestConnector(t, server, nil).Query(context.Background(), Target{Endpoint: server.URL}, validQuery("prometheus.service.request_rate.v1"))
+		if !IsErrorCategory(err, ErrorResponseTooLarge) {
+			t.Fatalf("error = %v, want response too large", err)
 		}
 	})
 }
