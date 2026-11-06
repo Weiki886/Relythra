@@ -30,6 +30,7 @@ const (
 	ActionConnectionTested       Action = "connection.tested"
 	ActionWebhookReceived        Action = "webhook.received"
 	ActionDeploymentEventChanged Action = "deployment.event.changed"
+	ActionAlertMappingChanged    Action = "alert.mapping.changed"
 	ActionToolCalled             Action = "tool.called"
 	ActionNotificationSent       Action = "notification.sent"
 	ActionReportGenerated        Action = "report.generated"
@@ -123,6 +124,7 @@ func allowedAction(action Action) bool {
 		ActionConnectionTested,
 		ActionWebhookReceived,
 		ActionDeploymentEventChanged,
+		ActionAlertMappingChanged,
 		ActionToolCalled,
 		ActionNotificationSent,
 		ActionReportGenerated:

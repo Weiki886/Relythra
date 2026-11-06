@@ -27,6 +27,8 @@ type handler struct {
 	auditRecorder           audit.Recorder
 	deploymentWebhookSecret string
 	deploymentWebhookSource string
+	grafanaWebhookSecret    string
+	grafanaAlerts           store.GrafanaAlertRepository
 	managementActor         string
 	logger                  *slog.Logger
 	filter                  *redact.Filter
@@ -70,6 +72,8 @@ func NewHandlerWithDependencies(
 		auditRecorder:           dependencies.AuditRecorder,
 		deploymentWebhookSecret: dependencies.DeploymentWebhookSecret.Reveal(),
 		deploymentWebhookSource: dependencies.DeploymentWebhookSource,
+		grafanaWebhookSecret:    dependencies.GrafanaWebhookSecret.Reveal(),
+		grafanaAlerts:           dependencies.GrafanaAlerts,
 		managementActor:         dependencies.ManagementActor,
 		logger:                  logger,
 		filter:                  filter,
@@ -82,6 +86,8 @@ func NewHandlerWithDependencies(
 	mux.HandleFunc("/api/v1/deployment-events", apiHandler.manageDeploymentCollection)
 	mux.HandleFunc("/api/v1/deployment-events/candidates", apiHandler.getDeploymentCandidates)
 	mux.HandleFunc("/api/v1/deployment-events/{id}", apiHandler.manageDeploymentItem)
+	mux.HandleFunc("/api/v1/alerts/grafana", apiHandler.receiveGrafanaWebhook)
+	mux.HandleFunc("/api/v1/alerts/{id}/remap", apiHandler.remapGrafanaAlert)
 	mux.HandleFunc("/api/v1/data-source-mappings", apiHandler.manageMappingCollection)
 	mux.HandleFunc("/api/v1/data-source-mappings/{id}", apiHandler.manageMappingItem)
 	mux.HandleFunc("/api/v1/data-source-mappings/{id}/{action}", apiHandler.manageMappingAction)

@@ -108,6 +108,23 @@ func TestLoadAPIResolvesDeploymentWebhookSecretAndSource(t *testing.T) {
 	}
 }
 
+func TestLoadAPIResolvesDedicatedGrafanaWebhookSecret(t *testing.T) {
+	t.Setenv("RELYTHRA_TEST_GRAFANA_SECRET", "grafana-webhook-canary")
+	cfg, err := config.LoadAPI(environment(map[string]string{
+		"RELYTHRA_DATABASE_URL":               "postgres://localhost/relythra",
+		"RELYTHRA_GRAFANA_WEBHOOK_SECRET_REF": "env:RELYTHRA_TEST_GRAFANA_SECRET",
+	}))
+	if err != nil {
+		t.Fatalf("LoadAPI() error = %v", err)
+	}
+	if cfg.GrafanaWebhookSecret.Reveal() != "grafana-webhook-canary" {
+		t.Fatal("Grafana webhook secret was not resolved")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", cfg), "grafana-webhook-canary") {
+		t.Fatal("formatted API config exposed Grafana webhook secret")
+	}
+}
+
 func TestLoadAPIRejectsDeploymentWebhookSecretWithoutSource(t *testing.T) {
 	t.Setenv("RELYTHRA_TEST_DEPLOYMENT_SECRET", "deployment-webhook-canary")
 	if _, err := config.LoadAPI(environment(map[string]string{

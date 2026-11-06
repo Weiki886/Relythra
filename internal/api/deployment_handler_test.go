@@ -23,19 +23,45 @@ const (
 )
 
 type fakeDeploymentRepository struct {
-	event       store.DeploymentEvent
-	created     bool
-	createInput store.CreateDeploymentEventInput
-	updateInput store.UpdateDeploymentEventInput
-	updateID    string
-	query       store.DeploymentCandidateQuery
-	candidates  []store.DeploymentEvent
-	err         error
-	createCalls int
-	updateCalls int
-	queryCalls  int
-	claimed     map[string]bool
-	claimCalls  int
+	event            store.DeploymentEvent
+	created          bool
+	createInput      store.CreateDeploymentEventInput
+	updateInput      store.UpdateDeploymentEventInput
+	updateID         string
+	query            store.DeploymentCandidateQuery
+	candidates       []store.DeploymentEvent
+	err              error
+	createCalls      int
+	updateCalls      int
+	queryCalls       int
+	claimed          map[string]bool
+	claimCalls       int
+	grafanaInputs    []store.GrafanaAlertInput
+	grafanaRequestID string
+	grafanaResults   []store.GrafanaAlertResult
+}
+
+func (repository *fakeDeploymentRepository) IngestGrafanaAlerts(
+	_ context.Context,
+	inputs []store.GrafanaAlertInput,
+	requestID string,
+) ([]store.GrafanaAlertResult, error) {
+	repository.grafanaInputs = inputs
+	repository.grafanaRequestID = requestID
+	return repository.grafanaResults, repository.err
+}
+
+func (repository *fakeDeploymentRepository) RemapGrafanaAlert(
+	_ context.Context,
+	alertID string,
+	expectedVersion int64,
+	serviceID string,
+	environment string,
+) (store.GrafanaAlertResult, error) {
+	return store.GrafanaAlertResult{
+		Alert:      store.Alert{ID: alertID, EventVersion: expectedVersion + 1},
+		IncidentID: "incident-id", MatchState: "MATCHED",
+	}, repository.err
 }
 
 func (repository *fakeDeploymentRepository) CreateDeploymentEvent(
@@ -284,10 +310,12 @@ func newDeploymentTestHandler(
 	}
 	return NewHandlerWithDependencies(Dependencies{
 		Deployments:             repository,
+		GrafanaAlerts:           repository,
 		AdminAuthenticator:      mustAuthenticator(t, "management-token"),
 		AuditRecorder:           recorder,
 		DeploymentWebhookSecret: secret,
 		DeploymentWebhookSource: "github-actions",
+		GrafanaWebhookSecret:    secret,
 		ManagementActor:         "local-operator",
 	}, discardLogger())
 }

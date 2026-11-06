@@ -66,7 +66,12 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	}
 	assertEvaluationColumnsAbsent(t, ctx, db, schema)
 	assertDeploymentIngestionSchema(t, ctx, db, schema)
+	assertGrafanaAlertIngestionSchema(t, ctx, db, schema)
 
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back Grafana alert ingestion migration: %v", err)
+	}
+	assertGrafanaAlertIngestionRolledBack(t, ctx, db, schema)
 	if err := goose.DownContext(ctx, db, "."); err != nil {
 		t.Fatalf("roll back deployment event ingestion migration: %v", err)
 	}
@@ -116,6 +121,7 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"deployment_candidates",
 		"deployment_event_updates",
 		"deployment_webhook_signatures",
+		"alert_deliveries",
 		"hypothesis_evidence",
 		"audit_events",
 	} {
@@ -138,6 +144,7 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 		"reports_reject_mutation",
 		"audit_events_reject_mutation",
 		"deployment_event_updates_reject_mutation",
+		"alert_deliveries_reject_mutation",
 	} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
@@ -160,6 +167,9 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 	assertDomainConstraints(t, ctx, db, fixture)
 	var count int
 
+	if err := goose.DownContext(ctx, db, "."); err != nil {
+		t.Fatalf("roll back Grafana alert ingestion migration: %v", err)
+	}
 	if err := goose.DownContext(ctx, db, "."); err != nil {
 		t.Fatalf("roll back deployment event ingestion migration: %v", err)
 	}
@@ -239,6 +249,66 @@ func TestDomainSchemaMigratesAndRollsBack(t *testing.T) {
 
 	if err := goose.UpContext(ctx, db, "."); err != nil {
 		t.Fatalf("reapply domain migration: %v", err)
+	}
+}
+
+func assertGrafanaAlertIngestionSchema(t *testing.T, ctx context.Context, db *sql.DB, schema string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'incidents' AND column_name = 'alert_id'
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check incident alert reference: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("incident alert reference count = %d, want 1", count)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'alert_deliveries'
+		  AND column_name IN ('request_id', 'delivery_status', 'mapping_status', 'payload_hash', 'redacted_payload')
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check Grafana alert delivery schema: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("Grafana alert delivery columns = %d, want 5", count)
+	}
+}
+
+func assertGrafanaAlertIngestionRolledBack(t *testing.T, ctx context.Context, db *sql.DB, schema string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = 'alerts'
+		  AND column_name IN ('fingerprint_version', 'event_version')
+	`, schema).Scan(&count); err != nil {
+		t.Fatalf("check Grafana alert column rollback: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("Grafana-only alert columns after rollback = %d, want 0", count)
+	}
+	var relation *string
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)::text", schema+".alert_deliveries").Scan(&relation); err != nil {
+		t.Fatalf("check Grafana delivery table rollback: %v", err)
+	}
+	if relation != nil {
+		t.Fatalf("alert_deliveries still exists after migration rollback")
+	}
+	var definition string
+	if err := db.QueryRowContext(ctx, `
+		SELECT pg_get_constraintdef(constraint_row.oid)
+		FROM pg_constraint constraint_row
+		JOIN pg_class relation ON relation.oid = constraint_row.conrelid
+		JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+		WHERE namespace.nspname = $1 AND relation.relname = 'audit_events'
+		  AND constraint_row.conname = 'audit_events_action_check'
+	`, schema).Scan(&definition); err != nil {
+		t.Fatalf("read rolled-back audit action constraint: %v", err)
+	}
+	if strings.Contains(definition, "alert.mapping.changed") {
+		t.Fatalf("alert mapping audit action remains after rollback: %s", definition)
 	}
 }
 
