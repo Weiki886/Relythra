@@ -124,14 +124,18 @@ type mappingListView struct {
 }
 
 type queryPlanView struct {
-	TemplateID string    `json:"template_id"`
-	Version    int       `json:"version"`
-	Service    string    `json:"service"`
-	Start      time.Time `json:"start"`
-	End        time.Time `json:"end"`
-	Limit      int       `json:"limit"`
-	Cursor     string    `json:"cursor"`
-	MaxSeries  int       `json:"max_series"`
+	TemplateID  string        `json:"template_id"`
+	Version     int           `json:"version"`
+	Service     string        `json:"service"`
+	Environment string        `json:"environment,omitempty"`
+	QueryType   string        `json:"query_type,omitempty"`
+	Start       time.Time     `json:"start"`
+	End         time.Time     `json:"end"`
+	Step        time.Duration `json:"step,omitempty"`
+	Limit       int           `json:"limit"`
+	Cursor      string        `json:"cursor"`
+	MaxSeries   int           `json:"max_series"`
+	MaxPoints   int           `json:"max_points,omitempty"`
 }
 
 type validationView struct {
@@ -419,14 +423,18 @@ func (handler *handler) planMappingQuery(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	handler.writeData(w, r, http.StatusOK, queryPlanView{
-		TemplateID: normalized.TemplateID,
-		Version:    normalized.Version,
-		Service:    normalized.Service,
-		Start:      normalized.Start,
-		End:        normalized.End,
-		Limit:      normalized.Limit,
-		Cursor:     normalized.Cursor,
-		MaxSeries:  normalized.MaxSeries,
+		TemplateID:  normalized.TemplateID,
+		Version:     normalized.Version,
+		Service:     normalized.Service,
+		Environment: normalized.Environment,
+		QueryType:   normalized.QueryType,
+		Start:       normalized.Start,
+		End:         normalized.End,
+		Step:        normalized.Step,
+		Limit:       normalized.Limit,
+		Cursor:      normalized.Cursor,
+		MaxSeries:   normalized.MaxSeries,
+		MaxPoints:   normalized.MaxPoints,
 	})
 }
 
@@ -550,7 +558,11 @@ func newMappingView(mapping store.DataSourceMapping) mappingView {
 func findTemplate(templates []datasource.Template, id string) (datasource.Template, bool) {
 	for _, template := range templates {
 		if template.ID == id {
-			return template, true
+			registered, issues := datasource.ResolveTemplates(template.Source, []string{id})
+			if len(issues) != 0 || len(registered) != 1 {
+				return datasource.Template{}, false
+			}
+			return registered[0], true
 		}
 	}
 	return datasource.Template{}, false
@@ -563,11 +575,16 @@ func parseQueryParameters(values map[string]any) (datasource.QueryParameters, []
 	}
 	issues := make([]datasource.ValidationIssue, 0)
 	parameters.Service, _ = queryString(values, "service", &issues)
+	parameters.Environment, _ = queryString(values, "environment", &issues)
+	parameters.QueryType, _ = queryString(values, "query_type", &issues)
+	parameters.At, _ = queryString(values, "at", &issues)
 	parameters.Start, _ = queryString(values, "start", &issues)
 	parameters.End, _ = queryString(values, "end", &issues)
+	parameters.Step, _ = queryString(values, "step", &issues)
 	parameters.Cursor, _ = queryString(values, "cursor", &issues)
 	parameters.Limit, _ = queryInteger(values, "limit", &issues)
 	parameters.MaxSeries, _ = queryInteger(values, "max_series", &issues)
+	parameters.MaxPoints, _ = queryInteger(values, "max_points", &issues)
 	return parameters, issues
 }
 

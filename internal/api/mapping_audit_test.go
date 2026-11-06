@@ -183,6 +183,7 @@ func TestDatasourceManagementOperationsAreAudited(t *testing.T) {
 				"template_id":"prometheus.service.latency.v1",
 				"parameters":{
 					"service":"checkout-api",
+					"environment":"prod",
 					"start":"2026-11-04T05:00:00Z",
 					"end":"2026-11-04T06:00:00Z"
 				}

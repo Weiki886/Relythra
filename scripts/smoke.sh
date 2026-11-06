@@ -161,10 +161,9 @@ cat >"${query_body}" <<'JSON'
   "template_id": "prometheus.service.latency.v1",
   "parameters": {
     "service": "checkout-api",
+    "environment": "prod",
     "start": "2026-11-04T05:00:00Z",
-    "end": "2026-11-04T05:10:00Z",
-    "limit": 20,
-    "max_series": 100
+    "end": "2026-11-04T05:10:00Z"
   }
 }
 JSON
@@ -177,6 +176,32 @@ curl --fail --silent --show-error \
   --output "${query_response}" \
   "${api_url}/${mapping_id}/queries"
 grep --fixed-strings '"template_id":"prometheus.service.latency.v1"' "${query_response}"
+grep --fixed-strings '"environment":"prod"' "${query_response}"
+grep --fixed-strings '"step":30000000000' "${query_response}"
+grep --fixed-strings '"max_points":1000' "${query_response}"
+
+instant_query_body="${temp_dir}/instant-query.json"
+cat >"${instant_query_body}" <<'JSON'
+{
+  "template_id": "prometheus.service.latency.v1",
+  "parameters": {
+    "service": "checkout-api",
+    "environment": "prod",
+    "query_type": "instant",
+    "at": "2026-11-04T05:05:00Z"
+  }
+}
+JSON
+instant_query_response="${temp_dir}/instant-query-response.json"
+curl --fail --silent --show-error \
+  --header "Authorization: Bearer ${management_token}" \
+  --header 'Content-Type: application/json' \
+  --header 'X-Request-ID: smoke-mapping-instant-query' \
+  --data-binary "@${instant_query_body}" \
+  --output "${instant_query_response}" \
+  "${api_url}/${mapping_id}/queries"
+grep --fixed-strings '"query_type":"instant"' "${instant_query_response}"
+grep --fixed-strings '"max_points":1' "${instant_query_response}"
 
 stale_body="${temp_dir}/stale.json"
 sed '1s/^{/{"expected_version":999,/' "${mapping_body}" >"${stale_body}"
