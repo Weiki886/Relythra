@@ -161,10 +161,9 @@ cat >"${query_body}" <<'JSON'
   "template_id": "prometheus.service.latency.v1",
   "parameters": {
     "service": "checkout-api",
+    "environment": "prod",
     "start": "2026-11-04T05:00:00Z",
-    "end": "2026-11-04T05:10:00Z",
-    "limit": 20,
-    "max_series": 100
+    "end": "2026-11-04T05:10:00Z"
   }
 }
 JSON
@@ -177,6 +176,9 @@ curl --fail --silent --show-error \
   --output "${query_response}" \
   "${api_url}/${mapping_id}/queries"
 grep --fixed-strings '"template_id":"prometheus.service.latency.v1"' "${query_response}"
+grep --fixed-strings '"environment":"prod"' "${query_response}"
+grep --fixed-strings '"step":30000000000' "${query_response}"
+grep --fixed-strings '"max_points":1000' "${query_response}"
 
 stale_body="${temp_dir}/stale.json"
 sed '1s/^{/{"expected_version":999,/' "${mapping_body}" >"${stale_body}"
