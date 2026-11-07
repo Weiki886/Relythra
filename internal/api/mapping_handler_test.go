@@ -312,6 +312,54 @@ func TestQueryEndpointReturnsNormalizedFixedTemplatePlan(t *testing.T) {
 	}
 }
 
+func TestQueryEndpointReturnsNormalizedLokiPlan(t *testing.T) {
+	t.Parallel()
+
+	mapping := validPrometheusMapping()
+	mapping.SourceType = datasource.SourceLoki
+	mapping.PublicSettings.Endpoint = "https://logs.example.test"
+	mapping.Templates = []datasource.Template{{
+		ID: "loki.service.errors.v1", Version: 1, Source: datasource.SourceLoki,
+		Purpose: "Read bounded error log entries.", ResultSchema: "log.entry_list.v1",
+		AllowedParameters: []string{"cursor", "direction", "end", "environment", "limit", "service", "severity", "start"},
+	}}
+	handler := newMappingTestHandler(t, &fakeMappingStore{mapping: mapping}, nil, "management-token-canary")
+	request := authenticatedJSONRequest(
+		http.MethodPost,
+		"/api/v1/data-source-mappings/"+mappingID+"/queries",
+		`{
+			"template_id":"loki.service.errors.v1",
+			"parameters":{
+				"service":"checkout-api",
+				"environment":"prod",
+				"direction":" FORWARD ",
+				"severity":" ERROR ",
+				"start":"2026-11-04T05:00:00+08:00",
+				"end":"2026-11-04T06:00:00+08:00",
+				"limit":50
+			}
+		}`,
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		`"direction":"forward"`,
+		`"severity":"error"`,
+		`"environment":"prod"`,
+		`"start":"2026-11-03T21:00:00Z"`,
+		`"end":"2026-11-03T22:00:00Z"`,
+		`"limit":50`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("response missing %s: %s", expected, response.Body.String())
+		}
+	}
+}
+
 func TestQueryEndpointReturnsNormalizedInstantPlan(t *testing.T) {
 	t.Parallel()
 

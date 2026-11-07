@@ -20,6 +20,7 @@ const (
 	MaxQueryMaxPoints     = 20000
 	MaxQueryTotalPoints   = 20000
 	MaxQueryWindow        = 6 * time.Hour
+	MaxLokiQueryWindow    = 2 * time.Hour
 	DefaultQueryStep      = 30 * time.Second
 	MinQueryStep          = 5 * time.Second
 	MaxQueryStep          = 5 * time.Minute
@@ -37,6 +38,8 @@ type Template struct {
 type QueryParameters struct {
 	Service     string
 	Environment string
+	Direction   string
+	Severity    string
 	QueryType   string
 	At          string
 	Start       string
@@ -54,6 +57,8 @@ type NormalizedQuery struct {
 	Version     int
 	Service     string
 	Environment string
+	Direction   string
+	Severity    string
 	QueryType   string
 	Start       time.Time
 	End         time.Time
@@ -75,6 +80,10 @@ var commonParameters = []string{
 
 var prometheusParameters = []string{
 	"at", "end", "environment", "max_points", "max_series", "query_type", "service", "start", "step",
+}
+
+var lokiParameters = []string{
+	"cursor", "direction", "end", "environment", "limit", "service", "severity", "start",
 }
 
 var templateRegistry = map[string]Template{
@@ -141,12 +150,22 @@ var templateRegistry = map[string]Template{
 	"loki.service.errors.v1": {
 		ID: "loki.service.errors.v1", Version: 1, Source: SourceLoki,
 		Purpose:      "Read bounded error log entries.",
-		ResultSchema: "log.entry_list.v1", AllowedParameters: commonParameters,
+		ResultSchema: "log.entry_list.v1", AllowedParameters: lokiParameters,
+	},
+	"loki.service.slow_queries.v1": {
+		ID: "loki.service.slow_queries.v1", Version: 1, Source: SourceLoki,
+		Purpose:      "Read bounded slow database query log entries.",
+		ResultSchema: "log.entry_list.v1", AllowedParameters: lokiParameters,
 	},
 	"loki.container.restarts.v1": {
 		ID: "loki.container.restarts.v1", Version: 1, Source: SourceLoki,
 		Purpose:      "Read bounded container restart log entries.",
-		ResultSchema: "log.entry_list.v1", AllowedParameters: commonParameters,
+		ResultSchema: "log.entry_list.v1", AllowedParameters: lokiParameters,
+	},
+	"loki.service.config_errors.v1": {
+		ID: "loki.service.config_errors.v1", Version: 1, Source: SourceLoki,
+		Purpose:      "Read bounded service configuration error log entries.",
+		ResultSchema: "log.entry_list.v1", AllowedParameters: lokiParameters,
 	},
 	"runtime.containers.v1": {
 		ID: "runtime.containers.v1", Version: 1, Source: SourceRuntime,
@@ -229,6 +248,8 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 	queryType := ""
 	var start, end time.Time
 	var startOK, endOK bool
+	direction := ""
+	severity := strings.ToLower(strings.TrimSpace(parameters.Severity))
 	if template.Source == SourcePrometheus {
 		if !servicePattern.MatchString(environment) {
 			issues = append(issues, issue("parameters.environment", "required", "environment must be a lowercase environment slug"))
@@ -259,9 +280,30 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 	} else {
 		start, startOK = parseQueryTime(parameters.Start, "parameters.start", &issues)
 		end, endOK = parseQueryTime(parameters.End, "parameters.end", &issues)
+		if template.Source == SourceLoki {
+			if !servicePattern.MatchString(environment) {
+				issues = append(issues, issue("parameters.environment", "required", "environment must be a lowercase environment slug"))
+			}
+			direction = strings.ToLower(strings.TrimSpace(parameters.Direction))
+			if direction == "" {
+				direction = "backward"
+			}
+			if direction != "backward" && direction != "forward" {
+				issues = append(issues, issue("parameters.direction", "unsupported_value", "direction must be backward or forward"))
+			}
+			if severity != "" && severity != "debug" && severity != "info" && severity != "warn" && severity != "error" {
+				issues = append(issues, issue("parameters.severity", "unsupported_value", "severity must be debug, info, warn, or error"))
+			}
+		} else if severity != "" || strings.TrimSpace(parameters.Direction) != "" {
+			issues = append(issues, issue("parameters", "unsupported_parameter", "direction and severity are only allowed for Loki templates"))
+		}
 	}
 	if startOK && endOK {
 		if template.Source != SourcePrometheus || queryType == QueryTypeRange {
+			maxWindow := MaxQueryWindow
+			if template.Source == SourceLoki {
+				maxWindow = MaxLokiQueryWindow
+			}
 			switch {
 			case !end.After(start):
 				issues = append(issues, issue(
@@ -269,7 +311,7 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 					"invalid_range",
 					"query end must be after query start",
 				))
-			case end.Sub(start) > MaxQueryWindow:
+			case end.Sub(start) > maxWindow:
 				issues = append(issues, issue(
 					"parameters.end",
 					"window_too_large",
@@ -349,7 +391,7 @@ func ValidateQuery(template Template, parameters QueryParameters) (NormalizedQue
 
 	return NormalizedQuery{
 		TemplateID: template.ID, Version: template.Version,
-		Service: service, Environment: environment, QueryType: queryType,
+		Service: service, Environment: environment, Direction: direction, Severity: severity, QueryType: queryType,
 		Start: start.UTC(), End: end.UTC(), Step: step,
 		Limit: limit, Cursor: cursor, MaxSeries: maxSeries, MaxPoints: maxPoints,
 	}, issues

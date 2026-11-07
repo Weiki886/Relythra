@@ -128,6 +128,8 @@ type queryPlanView struct {
 	Version     int           `json:"version"`
 	Service     string        `json:"service"`
 	Environment string        `json:"environment,omitempty"`
+	Direction   string        `json:"direction,omitempty"`
+	Severity    string        `json:"severity,omitempty"`
 	QueryType   string        `json:"query_type,omitempty"`
 	Start       time.Time     `json:"start"`
 	End         time.Time     `json:"end"`
@@ -427,6 +429,8 @@ func (handler *handler) planMappingQuery(w http.ResponseWriter, r *http.Request)
 		Version:     normalized.Version,
 		Service:     normalized.Service,
 		Environment: normalized.Environment,
+		Direction:   normalized.Direction,
+		Severity:    normalized.Severity,
 		QueryType:   normalized.QueryType,
 		Start:       normalized.Start,
 		End:         normalized.End,
@@ -576,6 +580,8 @@ func parseQueryParameters(values map[string]any) (datasource.QueryParameters, []
 	issues := make([]datasource.ValidationIssue, 0)
 	parameters.Service, _ = queryString(values, "service", &issues)
 	parameters.Environment, _ = queryString(values, "environment", &issues)
+	parameters.Direction, _ = queryString(values, "direction", &issues)
+	parameters.Severity, _ = queryString(values, "severity", &issues)
 	parameters.QueryType, _ = queryString(values, "query_type", &issues)
 	parameters.At, _ = queryString(values, "at", &issues)
 	parameters.Start, _ = queryString(values, "start", &issues)
