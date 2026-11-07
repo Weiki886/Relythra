@@ -55,3 +55,9 @@ Risk is high because incorrect runtime identity can mislead incident diagnosis. 
 - `git diff --check`: passed.
 - Local Docker daemon is unavailable; real Compose smoke and demo fault validation were not run locally. Final-head CI and human review remain merge gates.
 - Deferred Issue #13 acceptance: authenticated project/service/container mapping, verified lifecycle events, healthy-peer comparison, replacement history and memory-growth/restart fault exercise. This library is not yet connected to API/Agent/UI; these limitations are not treated as passed acceptance criteria.
+
+## Independent review and integration (2026-11-08)
+
+- Independent code review of the foundation scope returned `Approve with nits`; the future-start identity and exporter scrape freshness findings were fixed and independently checked. This is not full Issue #13 acceptance or human approval.
+- Deferred nonblocking review note: duplicate metric-series detection includes `instance`, while raw cgroup merging uses host plus raw cgroup ID. The registered fixed container PromQL drops `instance`, so the current real connector path cannot produce the conflicting combination. Before widening the metrics-client contract, align these identity keys or validate the allowed result label shape.
+- PR #44 was verified merged into `origin/main` at `8e07746259a0b91149af97b56b2baa49538f58f2`; the latest main was merged without conflicts. The merged GitHub connector adds no overlapping runtime changes. Final-head checks are rerun after integration.
